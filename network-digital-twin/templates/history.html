@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+
+{% block title %}Telemetry History & Events{% endblock %}
+
+{% block content %}
+<div class="dashboard-wrapper">
+    <div class="page-header-row">
+        <div>
+            <h2 class="page-title">Historical Telemetry & Audit Logs</h2>
+            <p class="page-desc">Time-series ping latency records and network state transitions stored in SQLite.</p>
+        </div>
+        <div class="panel-actions">
+            <button class="btn btn-secondary btn-sm" onclick="window.location.reload()">⟲ Refresh Data</button>
+        </div>
+    </div>
+
+    <!-- Summary Stats -->
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">TOTAL PINGS</span>
+                <span class="metric-icon">📡</span>
+            </div>
+            <div class="metric-value">{{ total_pings }}</div>
+            <div class="metric-sub">Recorded in SQLite</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">NETWORK UPTIME</span>
+                <span class="metric-icon online-icon">●</span>
+            </div>
+            <div class="metric-value status-online">{{ uptime_pct }}%</div>
+            <div class="metric-sub">Historical availability</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">NETWORK SESSIONS</span>
+                <span class="metric-icon">🔄</span>
+            </div>
+            <div class="metric-value">{{ sessions|length }}</div>
+            <div class="metric-sub">Tracked Hotspots & Subnets</div>
+        </div>
+    </div>
+
+    <!-- Network Sessions Panel -->
+    <div class="panel" style="margin-bottom: 24px;">
+        <div class="panel-header">
+            <div>
+                <h3 class="panel-title">Network Connection Sessions</h3>
+                <span class="panel-subtitle">Audited log of distinct network/hotspot environments connected by the host machine.</span>
+            </div>
+            <span class="badge badge-info">{{ sessions|length }} Sessions Tracked</span>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table data-table-sm">
+                <thead>
+                    <tr>
+                        <th>Session</th>
+                        <th>Network ID</th>
+                        <th>Subnet CIDR</th>
+                        <th>Gateway</th>
+                        <th>Host IP</th>
+                        <th>Start Time</th>
+                        <th>Session State</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in sessions %}
+                    <tr>
+                        <td><strong>#{{ s.session_id }}</strong></td>
+                        <td><code style="font-size: 0.75rem; color: #a5b4fc;">{{ s.network_id }}</code></td>
+                        <td>{{ s.network_cidr or 'N/A' }}</td>
+                        <td><code>{{ s.gateway or 'None' }}</code></td>
+                        <td><code>{{ s.local_ip or 'N/A' }}</code></td>
+                        <td><span class="text-muted font-mono">{{ s.start_time }}</span></td>
+                        <td>
+                            {% if s.is_active %}
+                                <span class="badge badge-online">CURRENT ACTIVE</span>
+                            {% else %}
+                                <span class="badge" style="background:#334155; color:#94a3b8;">HISTORICAL</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted">No network sessions recorded yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Dual History Panels: Events & Status Records -->
+    <div class="workspace-grid">
+        <!-- Events Feed History -->
+        <div class="panel">
+            <div class="panel-header">
+                <div>
+                    <h3 class="panel-title">System & Network Events</h3>
+                    <span class="panel-subtitle">Audited status transitions, latency alerts, and simulation runs</span>
+                </div>
+                <span class="badge badge-info">{{ events|length }} Events</span>
+            </div>
+            <div class="table-responsive" style="max-height: 520px; overflow-y: auto;">
+                <table class="data-table data-table-sm">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Target</th>
+                            <th>Type</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ev in events %}
+                        <tr>
+                            <td><span class="text-muted font-mono">{{ ev.timestamp }}</span></td>
+                            <td><code>{{ ev.device_id or 'SYSTEM' }}</code></td>
+                            <td>
+                                <span class="badge {% if ev.event_type == 'STATUS_CHANGE' %}badge-online{% elif ev.event_type == 'ALERT' %}badge-warning{% else %}badge-system{% endif %}">
+                                    {{ ev.event_type }}
+                                </span>
+                            </td>
+                            <td>{{ ev.message }}</td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="4" class="text-center text-muted">No network events recorded yet.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Telemetry Records Table -->
+        <div class="panel">
+            <div class="panel-header">
+                <div>
+                    <h3 class="panel-title">Telemetry History Records</h3>
+                    <span class="panel-subtitle">ICMP telemetry per device with loss, average, min, and max latency</span>
+                </div>
+                <span class="badge badge-pulse">SQLite Records</span>
+            </div>
+            
+            <!-- Filter Bar (Section 39) -->
+            <div style="padding: 10px 16px; border-bottom: 1px solid rgba(55,65,81,0.4); display: flex; gap: 10px; flex-wrap: wrap; background: rgba(15,23,42,0.4);">
+                <input type="text" id="filterDevice" class="form-input form-input-sm" placeholder="🔍 Filter by Device ID..." style="width: 170px;" oninput="filterTelemetryTable()">
+                <input type="text" id="filterNetwork" class="form-input form-input-sm" placeholder="🌐 Filter by Network..." style="width: 180px;" oninput="filterTelemetryTable()">
+                <select id="filterStatus" class="form-input form-input-sm" style="width: 140px;" onchange="filterTelemetryTable()">
+                    <option value="">All Statuses</option>
+                    <option value="ONLINE">ONLINE</option>
+                    <option value="UNREACHABLE">UNREACHABLE</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="resetTelemetryFilters()">Clear Filters</button>
+            </div>
+
+            <div class="table-responsive" style="max-height: 520px; overflow-y: auto;">
+                <table class="data-table data-table-sm" id="telemetryTable">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Device</th>
+                            <th>Status</th>
+                            <th>Avg Latency</th>
+                            <th>Min / Max</th>
+                            <th>Loss</th>
+                            <th>Network ID</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for st in statuses %}
+                        <tr class="telemetry-row" data-device="{{ st.device_id }}" data-network="{{ st.network_id or '' }}" data-status="{{ st.status }}">
+                            <td><span class="text-muted font-mono">{{ st.timestamp }}</span></td>
+                            <td><code>{{ st.device_id }}</code></td>
+                            <td>
+                                <span class="badge {% if st.status == 'ONLINE' %}badge-online{% else %}badge-offline{% endif %}">
+                                    {{ st.status }}
+                                </span>
+                            </td>
+                            <td>
+                                {% if st.latency is not none %}
+                                    <strong class="text-accent">{{ st.latency }} ms</strong>
+                                {% else %}
+                                    <span class="text-muted">N/A</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if st.min_latency is not none and st.max_latency is not none %}
+                                    <span class="font-mono text-muted" style="font-size: 0.75rem;">{{ st.min_latency }} / {{ st.max_latency }} ms</span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ st.packet_loss }}%</td>
+                            <td><code style="font-size:0.7rem; color:#a5b4fc;">{{ st.network_id or '—' }}</code></td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="7" class="text-center text-muted">No telemetry records logged yet.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterTelemetryTable() {
+    const devFilter = document.getElementById("filterDevice").value.trim().toLowerCase();
+    const netFilter = document.getElementById("filterNetwork").value.trim().toLowerCase();
+    const statusFilter = document.getElementById("filterStatus").value;
+
+    const rows = document.querySelectorAll(".telemetry-row");
+    rows.forEach(r => {
+        const d = (r.getAttribute("data-device") || "").toLowerCase();
+        const n = (r.getAttribute("data-network") || "").toLowerCase();
+        const s = r.getAttribute("data-status") || "";
+
+        const matchDev = !devFilter || d.includes(devFilter);
+        const matchNet = !netFilter || n.includes(netFilter);
+        const matchStatus = !statusFilter || s === statusFilter;
+
+        if (matchDev && matchNet && matchStatus) {
+            r.style.display = "";
+        } else {
+            r.style.display = "none";
+        }
+    });
+}
+
+function resetTelemetryFilters() {
+    document.getElementById("filterDevice").value = "";
+    document.getElementById("filterNetwork").value = "";
+    document.getElementById("filterStatus").value = "";
+    filterTelemetryTable();
+}
+</script>
+{% endblock %}

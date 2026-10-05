@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Dashboard{% endblock %} - Network Digital Twin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Local Cytoscape.js bundle -->
+    <script src="{{ url_for('static', filename='js/cytoscape.min.js') }}"></script>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-left">
+            <a href="/" class="logo-box" style="text-decoration: none;">
+                <span class="logo-icon">⬢</span>
+                <div>
+                    <h1 class="logo-title">NET-TWIN</h1>
+                    <span class="logo-subtitle">Network Digital Twin Platform</span>
+                </div>
+            </a>
+            {% if active_page == 'simulation' %}
+            <div class="mode-badge sim-mode">
+                <span class="pulse-dot sim-dot"></span>
+                <span>WHAT-IF SIMULATION MODE (ISOLATED)</span>
+            </div>
+            {% else %}
+            <div class="mode-badge live-mode" id="modeBadge">
+                <span class="pulse-dot"></span>
+                <span>LIVE MONITORING MODE</span>
+            </div>
+            {% endif %}
+        </div>
+        <nav class="nav-links">
+            <a href="/" class="nav-item {% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
+            <a href="/devices" class="nav-item {% if active_page == 'devices' %}active{% endif %}">Device Manager</a>
+            <a href="/simulation" class="nav-item {% if active_page == 'simulation' %}active{% endif %}">What-If Simulator</a>
+            <a href="/history" class="nav-item {% if active_page == 'history' %}active{% endif %}">Telemetry History</a>
+        </nav>
+    </header>
+
+    <main class="main-container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="app-footer">
+        <p>Network Digital Twin Prototype &bull; Student Engineering Project &bull; Safe In-Memory NetworkX Graph Model &bull; College Demonstration Ready</p>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

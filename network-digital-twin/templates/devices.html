@@ -1,0 +1,504 @@
+{% extends "base.html" %}
+
+{% block title %}Device Management{% endblock %}
+
+{% block content %}
+<div class="dashboard-wrapper">
+    <div class="page-header-row">
+        <div>
+            <h2 class="page-title">Authorized Device Management</h2>
+            <p class="page-desc">Define and manage monitored targets on your authorized mobile hotspot test network.</p>
+        </div>
+        <button class="btn btn-primary" onclick="openAddDeviceModal()">+ Register Device</button>
+    </div>
+
+    <!-- Alert / Feedback Message Container -->
+    <div id="deviceAlert" class="alert-box" style="display: none;"></div>
+
+    <!-- Current Network Monitored Devices Table Panel -->
+    <div class="panel" style="margin-bottom: 24px;">
+        <div class="panel-header">
+            <div>
+                <h3 class="panel-title">Active Network Monitored Devices</h3>
+                <span class="panel-subtitle">Currently observed targets on active network: <code style="color:var(--accent-blue);">{{ current_network.network_id if current_network else 'Active Network' }}</code></span>
+            </div>
+            <span class="badge badge-info">{{ current_devices|length }} Current Devices</span>
+        </div>
+
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Node ID</th>
+                        <th>Device Name</th>
+                        <th>IPv4 Address</th>
+                        <th>Type</th>
+                        <th>Monitoring</th>
+                        <th>Live Status</th>
+                        <th>Packet Loss & Probes</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="devicesTableBody">
+                    <!-- Gateway Row (Permanent) -->
+                    <tr class="gateway-row">
+                        <td><code>{{ gateway.id }}</code></td>
+                        <td><strong>{{ gateway.name }}</strong></td>
+                        <td><code>{{ gateway.ip or '192.168.43.1' }}</code></td>
+                        <td><span class="badge badge-info">Gateway / Router</span></td>
+                        <td><span class="badge badge-online">Hub</span></td>
+                        <td><span class="badge badge-online">ONLINE</span></td>
+                        <td><span class="badge badge-online">0.0% Loss (Hub)</span></td>
+                        <td><span class="text-muted font-mono" style="font-size:0.75rem;">Central Access Point</span></td>
+                    </tr>
+
+                    {% for d in current_devices %}
+                    <tr id="row-{{ d.device_id }}">
+                        <td><code>{{ d.device_id }}</code></td>
+                        <td>
+                            <strong>{{ d.device_name }}</strong>
+                            {% if d.description %}<div class="text-muted" style="font-size:0.75rem;">{{ d.description }}</div>{% endif %}
+                        </td>
+                        <td><code>{{ d.ip_address }}</code></td>
+                        <td>{{ d.device_type }}</td>
+                        <td>
+                            {% if d.is_monitored %}
+                                <span class="badge badge-online">MONITORED</span>
+                            {% else %}
+                                <span class="badge badge-system">PAUSED</span>
+                            {% endif %}
+                        </td>
+                        <td id="status-col-{{ d.device_id }}">
+                            <span class="badge {% if d.status == 'ONLINE' %}badge-online{% elif d.status == 'UNREACHABLE' %}badge-offline{% else %}badge-system{% endif %}">
+                                {{ d.status or 'PENDING' }}
+                            </span>
+                        </td>
+                        <td id="loss-col-{{ d.device_id }}">
+                            <span class="text-muted font-mono" style="font-size:0.78rem;">Live Polled</span>
+                        </td>
+                        <td class="action-buttons">
+                            <button class="btn btn-primary btn-sm" id="btn-test-{{ d.device_id }}" onclick="testDeviceProbes('{{ d.device_id }}')" title="Run 5-packet ICMP probe (RTT & Loss)">⚡ Test Now</button>
+                            <button class="btn btn-secondary btn-sm" onclick="pingDevice('{{ d.ip_address }}', '{{ d.device_id }}')" title="Single Instant Ping">Ping</button>
+                            <button class="btn btn-secondary btn-sm" onclick="toggleMonitoring('{{ d.device_id }}')" title="Pause or Resume in Digital Twin">{% if d.is_monitored %}Pause{% else %}Monitor{% endif %}</button>
+                            <button class="btn btn-secondary btn-sm" onclick="openEditDeviceModal('{{ d.device_id }}', '{{ d.device_name }}', '{{ d.ip_address }}', '{{ d.device_type }}', '{{ d.description or '' }}')">✏ Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.device_id }}')">🗑 Delete</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="8" class="text-center text-muted" style="padding: 20px;">
+                            No devices registered for the current network yet. Click <strong>+ Register Device</strong> above or use <strong>Active Scan</strong> on the Dashboard.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Historical / Stale Devices Panel -->
+    <div class="panel">
+        <div class="panel-header">
+            <div>
+                <h3 class="panel-title">Historical & Stale Devices (Previous Networks)</h3>
+                <span class="panel-subtitle">Devices registered on previously connected networks/hotspots. Isolated as STALE to prevent false offline alerts on the current network.</span>
+            </div>
+            <span class="badge" style="background: rgba(148, 163, 184, 0.2); color: #94a3b8;">{{ historical_devices|length }} Stale Devices</span>
+        </div>
+
+        <div class="table-responsive">
+            <table class="data-table data-table-sm">
+                <thead>
+                    <tr>
+                        <th>Node ID</th>
+                        <th>Device Name</th>
+                        <th>IPv4 Address</th>
+                        <th>Registered Network ID</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for d in historical_devices %}
+                    <tr id="row-{{ d.device_id }}" style="opacity: 0.85;">
+                        <td><code>{{ d.device_id }}</code></td>
+                        <td><strong>{{ d.device_name }}</strong></td>
+                        <td><code>{{ d.ip_address }}</code></td>
+                        <td><code style="font-size: 0.72rem; color: #a5b4fc;">{{ d.network_id or 'Unknown Network' }}</code></td>
+                        <td><span class="badge" style="background: #1e293b; color: #94a3b8; border: 1px solid #475569;">STALE</span></td>
+                        <td class="action-buttons">
+                            <button class="btn btn-secondary btn-sm" onclick="adoptDeviceToCurrent('{{ d.device_id }}')" title="Re-assign this device to current active network">Adopt to Current</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteDevice('{{ d.device_id }}')">🗑 Delete</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted" style="padding: 16px;">
+                            No stale or previous network devices found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Add Device Modal -->
+<div id="addModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+        <div class="modal-header">
+            <h3>Register Monitored Device</h3>
+            <button class="modal-close" onclick="closeModal('addModal')">&times;</button>
+        </div>
+        <form id="addDeviceForm" onsubmit="submitAddDevice(event)">
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Device ID <span class="required">*</span></label>
+                    <input type="text" id="addDevId" class="form-input" placeholder="e.g. PC4 or LAPTOP_A" required pattern="[A-Za-z0-9_-]+" title="Alphanumeric, hyphens and underscores only">
+                    <small class="form-help">Unique identifier used in the Digital Twin graph.</small>
+                </div>
+                <div class="form-group">
+                    <label>Device Name <span class="required">*</span></label>
+                    <input type="text" id="addDevName" class="form-input" placeholder="e.g. Research Laptop 2" required>
+                </div>
+                <div class="form-group">
+                    <label>IPv4 Address <span class="required">*</span></label>
+                    <input type="text" id="addDevIp" class="form-input" placeholder="e.g. 192.168.43.104" required pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                    <small class="form-help">Must be a valid IPv4 address assigned by the mobile hotspot.</small>
+                </div>
+                <div class="form-group">
+                    <label>Device Type</label>
+                    <select id="addDevType" class="form-input">
+                        <option value="Computer">Computer / PC</option>
+                        <option value="Laptop" selected>Laptop</option>
+                        <option value="Smartphone">Smartphone</option>
+                        <option value="Server">Local Test Server</option>
+                        <option value="IoT">IoT Microcontroller / ESP32</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input type="text" id="addDevDesc" class="form-input" placeholder="Optional notes for demonstration">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="btnAddSubmit">Save Device</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Edit Device Modal -->
+<div id="editModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+        <div class="modal-header">
+            <h3>Edit Monitored Device</h3>
+            <button class="modal-close" onclick="closeModal('editModal')">&times;</button>
+        </div>
+        <form id="editDeviceForm" onsubmit="submitEditDevice(event)">
+            <div class="modal-body">
+                <input type="hidden" id="editDevId">
+                <div class="form-group">
+                    <label>Device ID</label>
+                    <input type="text" id="editDevIdDisplay" class="form-input" disabled>
+                </div>
+                <div class="form-group">
+                    <label>Device Name <span class="required">*</span></label>
+                    <input type="text" id="editDevName" class="form-input" required>
+                </div>
+                <div class="form-group">
+                    <label>IPv4 Address <span class="required">*</span></label>
+                    <input type="text" id="editDevIp" class="form-input" required pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                </div>
+                <div class="form-group">
+                    <label>Device Type</label>
+                    <select id="editDevType" class="form-input">
+                        <option value="Computer">Computer / PC</option>
+                        <option value="Laptop">Laptop</option>
+                        <option value="Smartphone">Smartphone</option>
+                        <option value="Server">Local Test Server</option>
+                        <option value="IoT">IoT Microcontroller / ESP32</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input type="text" id="editDevDesc" class="form-input">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Update Device</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Live status loader on table load
+document.addEventListener("DOMContentLoaded", () => {
+    refreshTableStatuses();
+    setInterval(refreshTableStatuses, 5000);
+
+    // Auto-prefill if redirected from Discovery table
+    const urlParams = new URLSearchParams(window.location.search);
+    const prefillIp = urlParams.get("prefill_ip");
+    if (prefillIp) {
+        openAddDeviceModal();
+        const ipInput = document.getElementById("addDevIp");
+        const idInput = document.getElementById("addDevId");
+        const nameInput = document.getElementById("addDevName");
+        if (ipInput) ipInput.value = prefillIp;
+        const parts = prefillIp.split(".");
+        const last = parts[parts.length - 1];
+        if (idInput) idInput.value = `NODE_${last}`;
+        if (nameInput) nameInput.value = `Device ${prefillIp}`;
+    }
+});
+
+async function refreshTableStatuses() {
+    try {
+        const res = await fetch("/api/network");
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        data.elements.nodes.forEach(n => {
+            const col = document.getElementById(`status-col-${n.data.id}`);
+            const lossCol = document.getElementById(`loss-col-${n.data.id}`);
+            if (col) {
+                const badgeClass = n.data.status === "ONLINE" ? "badge-online" : "badge-offline";
+                const latText = n.data.latency ? ` (${n.data.latency} ms)` : "";
+                col.innerHTML = `<span class="badge ${badgeClass}">${n.data.status}${latText}</span>`;
+            }
+            if (lossCol && lossCol.innerText.includes("Pending")) {
+                if (n.data.status === "ONLINE") {
+                    lossCol.innerHTML = `<span class="badge badge-online">0.0% Loss</span>`;
+                } else if (n.data.status === "OFFLINE") {
+                    lossCol.innerHTML = `<span class="badge badge-offline">100.0% Loss</span>`;
+                }
+            }
+        });
+    } catch (e) {
+        console.warn("Status refresh error:", e);
+    }
+}
+
+function showAlert(msg, isSuccess = true) {
+    const el = document.getElementById("deviceAlert");
+    el.className = "alert-box " + (isSuccess ? "alert-success" : "alert-error");
+    el.textContent = msg;
+    el.style.display = "block";
+    setTimeout(() => { el.style.display = "none"; }, 5000);
+}
+
+function openAddDeviceModal() {
+    document.getElementById("addDeviceForm").reset();
+    document.getElementById("addModal").style.display = "flex";
+}
+
+function openEditDeviceModal(id, name, ip, type, desc) {
+    document.getElementById("editDevId").value = id;
+    document.getElementById("editDevIdDisplay").value = id;
+    document.getElementById("editDevName").value = name;
+    document.getElementById("editDevIp").value = ip;
+    document.getElementById("editDevType").value = type;
+    document.getElementById("editDevDesc").value = desc;
+    document.getElementById("editModal").style.display = "flex";
+}
+
+function closeModal(id) {
+    document.getElementById(id).style.display = "none";
+}
+
+async function submitAddDevice(e) {
+    e.preventDefault();
+    const btn = document.getElementById("btnAddSubmit");
+    btn.disabled = true;
+
+    const payload = {
+        device_id: document.getElementById("addDevId").value.trim(),
+        device_name: document.getElementById("addDevName").value.trim(),
+        ip_address: document.getElementById("addDevIp").value.trim(),
+        device_type: document.getElementById("addDevType").value,
+        description: document.getElementById("addDevDesc").value.trim()
+    };
+
+    try {
+        const res = await fetch("/api/devices", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        
+        if (res.ok) {
+            showAlert(`Device ${payload.device_id} successfully registered!`);
+            closeModal("addModal");
+            setTimeout(() => window.location.reload(), 1000);
+        } else {
+            showAlert(data.error || "Failed to register device", false);
+        }
+    } catch (err) {
+        showAlert("Server communication error", false);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function submitEditDevice(e) {
+    e.preventDefault();
+    const id = document.getElementById("editDevId").value;
+    const payload = {
+        device_name: document.getElementById("editDevName").value.trim(),
+        ip_address: document.getElementById("editDevIp").value.trim(),
+        device_type: document.getElementById("editDevType").value,
+        description: document.getElementById("editDevDesc").value.trim()
+    };
+
+    try {
+        const res = await fetch(`/api/devices/${id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+            showAlert(`Device ${id} updated successfully!`);
+            closeModal("editModal");
+            setTimeout(() => window.location.reload(), 1000);
+        } else {
+            showAlert(data.error || "Update failed", false);
+        }
+    } catch (err) {
+        showAlert("Server communication error", false);
+    }
+}
+
+async function deleteDevice(id) {
+    if (!confirm(`Are you sure you want to remove device '${id}' from the Digital Twin?`)) return;
+
+    try {
+        const res = await fetch(`/api/devices/${id}`, { method: "DELETE" });
+        if (res.ok) {
+            showAlert(`Device ${id} deleted.`);
+            const row = document.getElementById(`row-${id}`);
+            if (row) row.remove();
+        } else {
+            const data = await res.json();
+            showAlert(data.error || "Delete failed", false);
+        }
+    } catch (err) {
+        showAlert("Server communication error", false);
+    }
+}
+
+async function pingDevice(ip, devId) {
+    const col = document.getElementById(`status-col-${devId}`);
+    if (col) col.innerHTML = `<span class="badge badge-warning">Pinging...</span>`;
+
+    try {
+        const res = await fetch(`/api/monitor/ping-device?ip=${encodeURIComponent(ip)}`);
+        const data = await res.json();
+        
+        if (data.is_online) {
+            showAlert(`${devId} is ONLINE (${data.latency} ms)`);
+            if (col) col.innerHTML = `<span class="badge badge-online">ONLINE (${data.latency} ms)</span>`;
+        } else {
+            showAlert(`${devId} is OFFLINE (${data.error || 'Timed out'})`, false);
+            if (col) col.innerHTML = `<span class="badge badge-offline">OFFLINE</span>`;
+        }
+    } catch (err) {
+        showAlert("Ping failed", false);
+    }
+}
+
+async function testDeviceProbes(devId) {
+    const btn = document.getElementById(`btn-test-${devId}`);
+    const statusCol = document.getElementById(`status-col-${devId}`);
+    const lossCol = document.getElementById(`loss-col-${devId}`);
+
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Probing (5 pkts)...";
+    }
+    if (statusCol) statusCol.innerHTML = `<span class="badge badge-warning">Probing...</span>`;
+
+    try {
+        const res = await fetch(`/api/monitor/${encodeURIComponent(devId)}/test`, {
+            method: "POST"
+        });
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+            const isOnline = data.status === "ONLINE";
+            const badgeClass = isOnline ? "badge-online" : "badge-offline";
+            const latStr = data.average_latency !== null ? ` (${data.average_latency} ms)` : "";
+            
+            if (statusCol) {
+                statusCol.innerHTML = `<span class="badge ${badgeClass}">${data.status}${latStr}</span>`;
+            }
+
+            if (lossCol) {
+                const lossBadgeClass = data.packet_loss === 0 ? "badge-online" : (data.packet_loss < 50 ? "badge-warning" : "badge-offline");
+                lossCol.innerHTML = `
+                    <span class="badge ${lossBadgeClass}">${data.packet_loss}% Loss</span>
+                    <span class="text-muted" style="font-size:0.75rem; display:block;">${data.packets_received}/${data.packets_sent} pkts</span>
+                `;
+            }
+
+            showAlert(`Probed ${devId} (${data.ip_address}): ${data.packets_received}/${data.packets_sent} pkts, ${data.packet_loss}% loss, Avg: ${data.average_latency || '—'} ms`, isOnline);
+        } else {
+            showAlert(data.error || "Probe failed", false);
+            if (statusCol) statusCol.innerHTML = `<span class="badge badge-offline">OFFLINE</span>`;
+        }
+    } catch (err) {
+        showAlert("Server communication error", false);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = "⚡ Test Now";
+        }
+    }
+}
+
+async function toggleMonitoring(devId) {
+    try {
+        const res = await fetch(`/api/devices/${encodeURIComponent(devId)}/toggle-monitoring`, {
+            method: "POST"
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            showAlert(`Monitoring ${data.is_monitored ? 'resumed' : 'paused'} for ${devId}.`);
+            setTimeout(() => window.location.reload(), 800);
+        } else {
+            showAlert(data.error || "Failed to toggle monitoring", false);
+        }
+    } catch (err) {
+        showAlert("Server communication error", false);
+    }
+}
+
+async function adoptDeviceToCurrent(devId) {
+    if (!confirm(`Adopt device '${devId}' to the current active network? It will be monitored on this network.`)) return;
+
+    try {
+        const res = await fetch(`/api/devices/${encodeURIComponent(devId)}/adopt`, {
+            method: "POST"
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            showAlert(`Device ${devId} successfully adopted to current network!`);
+            setTimeout(() => window.location.reload(), 1000);
+        } else {
+            showAlert(data.error || "Failed to adopt device", false);
+        }
+    } catch (err) {
+        showAlert("Server communication error", false);
+    }
+}
+</script>
+{% endblock %}

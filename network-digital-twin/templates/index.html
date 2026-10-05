@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+
+{% block title %}Real-Time Dashboard{% endblock %}
+
+{% block content %}
+<div class="dashboard-wrapper">
+    <!-- Top Summary Metrics Row -->
+    <section class="metrics-grid">
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">CURRENT NODES</span>
+                <span class="metric-icon">💻</span>
+            </div>
+            <div class="metric-value" id="valTotalNodes">{{ summary.total_nodes }}</div>
+            <div class="metric-sub">Active in Current Network</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">ONLINE</span>
+                <span class="metric-icon online-icon">●</span>
+            </div>
+            <div class="metric-value status-online" id="valOnlineNodes">{{ summary.online_count }}</div>
+            <div class="metric-sub">Verified via ICMP Ping</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">UNREACHABLE</span>
+                <span class="metric-icon offline-icon">○</span>
+            </div>
+            <div class="metric-value status-offline" id="valOfflineNodes">{{ summary.unreachable_count }}</div>
+            <div class="metric-sub">Current Network Targets</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">STALE / PREV NETS</span>
+                <span class="metric-icon" style="color: #94a3b8;">⏸</span>
+            </div>
+            <div class="metric-value" style="color: #94a3b8;" id="valStaleNodes">{{ summary.stale_count or 0 }}</div>
+            <div class="metric-sub">Past Network Records</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">AVG LATENCY</span>
+                <span class="metric-icon">⏱</span>
+            </div>
+            <div class="metric-value" id="valAvgLatency">{{ summary.avg_latency }} <span class="unit">ms</span></div>
+            <div class="metric-sub">Mean Round-Trip Time</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">GRAPH TOPOLOGY</span>
+                <span class="metric-icon">🕸</span>
+            </div>
+            <div class="metric-value status-highlight" id="valTopologyStatus">
+                {% if summary.is_connected %}Connected{% else %}Partitioned{% endif %}
+            </div>
+            <div class="metric-sub">NetworkX Connectivity</div>
+        </div>
+    </section>
+
+    <!-- Main Workspace: Topology Canvas & Live Events Feed -->
+    <div class="workspace-grid">
+        <!-- Interactive Topology Canvas -->
+        <section class="panel topology-panel">
+            <div class="panel-header">
+                <div>
+                    <h2 class="panel-title">Digital Twin Virtual Topology Canvas</h2>
+                    <span class="panel-subtitle">Interactive in-memory NetworkX model of your mobile hotspot star network. Click any node to inspect telemetry.</span>
+                </div>
+                <div class="panel-actions">
+                    <button class="btn btn-secondary btn-sm" id="btnFitGraph" title="Fit to Screen">⛶ Fit</button>
+                    <button class="btn btn-primary btn-sm" id="btnTriggerPing" title="Ping all devices immediately">⚡ Ping Now</button>
+                </div>
+            </div>
+
+            <!-- Canvas Container -->
+            <div class="topology-canvas-container" style="position: relative;">
+                <div id="cyContainer" style="width: 100%; height: 100%;"></div>
+
+                <!-- Floating Node Telemetry Inspector -->
+                <div class="node-inspector-card" id="nodeInspector" style="display: none;">
+                    <div class="inspector-header">
+                        <span class="inspector-title" id="inspName">Device Name</span>
+                        <span class="badge" id="inspStatus">ONLINE</span>
+                    </div>
+                    <div class="inspector-details">
+                        <div class="insp-row">
+                            <span class="insp-label">Node ID:</span>
+                            <span class="insp-val" id="inspId">PC1</span>
+                        </div>
+                        <div class="insp-row">
+                            <span class="insp-label">IP Address:</span>
+                            <span class="insp-val" id="inspIp">192.168.43.101</span>
+                        </div>
+                        <div class="insp-row">
+                            <span class="insp-label">Device Type:</span>
+                            <span class="insp-val" id="inspType">Computer</span>
+                        </div>
+                        <div class="insp-row">
+                            <span class="insp-label">Round-Trip Latency:</span>
+                            <span class="insp-val text-accent" id="inspLatency">12.5 ms</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Canvas Legend -->
+                <div class="canvas-legend">
+                    <span class="legend-item"><span class="legend-dot dot-gw"></span> Hotspot Gateway (Star Hub)</span>
+                    <span class="legend-item"><span class="legend-dot dot-online"></span> Online Device</span>
+                    <span class="legend-item"><span class="legend-dot dot-offline"></span> Offline Device</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Live Events Feed Panel -->
+        <section class="panel events-panel">
+            <div class="panel-header">
+                <div>
+                    <h2 class="panel-title">Live Telemetry Events</h2>
+                    <span class="panel-subtitle">State transitions & thresholds</span>
+                </div>
+                <span class="badge badge-pulse">Auto-Updated</span>
+            </div>
+            <div class="events-list" id="eventsList">
+                {% if recent_events %}
+                    {% for ev in recent_events %}
+                    <div class="event-item">
+                        <span class="event-time">{{ ev.timestamp }}</span>
+                        <span class="event-badge {% if ev.event_type == 'STATUS_CHANGE' %}badge-online{% elif ev.event_type == 'ALERT' %}badge-warning{% else %}badge-system{% endif %}">{{ ev.event_type }}</span>
+                        <div class="event-body">
+                            <strong>{{ ev.message }}</strong>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="event-item">
+                        <span class="event-time">System Ready</span>
+                        <span class="event-badge badge-system">SYSTEM</span>
+                        <div class="event-body">
+                            <strong>Monitoring Engine Active</strong>
+                            <p>Listening for real-time state changes on configured test nodes.</p>
+                        </div>
+                    </div>
+                {% endif %}
+            </div>
+        </section>
+    </div>
+
+    <!-- Host Network Environment Context Panel -->
+    <section class="panel network-context-panel" style="margin-bottom: 24px;">
+        <div class="panel-header">
+            <div>
+                <h3 class="panel-title">Active Host Network Environment</h3>
+                <span class="panel-subtitle">Dynamic network detection automatically tracks hotspot/Wi-Fi transitions on the host machine.</span>
+            </div>
+            <div class="panel-actions">
+                <span class="badge badge-online" id="netStatusBadge">CONNECTED</span>
+                <button class="btn btn-secondary btn-sm" id="btnRefreshNetInfo" title="Refresh Host Network Details">🔄 Refresh Network</button>
+            </div>
+        </div>
+        <div class="network-info-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; padding: 16px 20px;">
+            <div class="info-item">
+                <span class="info-label" style="display: block; font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Active Interface</span>
+                <span class="info-val font-mono" id="netInterface" style="font-size: 0.95rem; font-weight: 600; color: var(--accent-blue);">Detecting...</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label" style="display: block; font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Host IPv4 Address</span>
+                <span class="info-val font-mono" id="netLocalIp" style="font-size: 0.95rem; font-weight: 600; color: var(--text-primary);">Detecting...</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label" style="display: block; font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Default Gateway (Hotspot)</span>
+                <span class="info-val font-mono" id="netGateway" style="font-size: 0.95rem; font-weight: 600; color: var(--status-online);">Detecting...</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label" style="display: block; font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Subnet CIDR</span>
+                <span class="info-val font-mono" id="netSubnet" style="font-size: 0.95rem; font-weight: 600; color: var(--text-primary);">Detecting...</span>
+            </div>
+            <div class="info-item" style="grid-column: 1 / -1; border-top: 1px solid rgba(55, 65, 81, 0.4); padding-top: 10px;">
+                <span class="info-label" style="display: block; font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Network Fingerprint (Network ID)</span>
+                <code id="netNetworkId" style="font-size: 0.8rem; color: #a5b4fc; background: rgba(0,0,0,0.25); padding: 4px 8px; border-radius: 4px; display: inline-block;">Detecting...</code>
+            </div>
+        </div>
+    </section>
+
+    <!-- Local Network Device Discovery Panel -->
+    <section class="panel discovery-panel" style="margin-bottom: 24px;">
+        <div class="panel-header">
+            <div>
+                <h3 class="panel-title">Visible Local Devices Discovery</h3>
+                <span class="panel-subtitle">Discovers visible devices on current subnet via concurrent ICMP probing and Windows ARP/neighbor cache.</span>
+            </div>
+            <div class="panel-actions">
+                <span class="text-muted" style="font-size: 0.75rem; font-family: var(--font-mono);">
+                    Last Scanned: <span id="discoveryLastTime" class="text-accent">—</span>
+                </span>
+                <span class="badge badge-info" id="discoveryCountBadge">0 Visible Hosts</span>
+                <button class="btn btn-secondary btn-sm" id="btnRefreshDiscovery" title="Refresh local ARP cache">🔄 Refresh ARP</button>
+                <button class="btn btn-primary btn-sm" id="btnActiveDiscovery" title="Execute dynamic subnet discovery across all usable candidates">⚡ Discover Devices</button>
+                <button class="btn btn-warning btn-sm" id="btnPingAllVisible" title="Send 5 ICMP probes to every visible device" style="background:#0284c7; border-color:#38bdf8; color:white;">⚡ Ping All Visible Devices</button>
+            </div>
+        </div>
+
+        <!-- Controlled Scan Feedback / Limitation Notice -->
+        <div id="discoveryNotice" style="background: rgba(15, 23, 42, 0.6); border-left: 3px solid var(--accent-blue); padding: 10px 16px; margin: 12px 16px; border-radius: 4px; font-size: 0.78rem; color: var(--text-secondary); line-height: 1.4;">
+            <strong style="color: var(--accent-blue);">ℹ Device Visibility Limitation Note:</strong>
+            A normal client laptop cannot guarantee discovery of every host on a hotspot or Wi-Fi network due to client isolation, firewalls, and ICMP restrictions. The Digital Twin lists <strong>Visible Local Devices</strong>. Subnet candidates are dynamically calculated (e.g. 253 remote hosts for /24 excluding local host IP and broadcast). Large subnets (> 512 hosts) are protected with a targeted discovery window.
+        </div>
+
+        <!-- Dynamic Discovery Progress Bar (Section 18) -->
+        <div id="discoveryProgressContainer" style="display: none; margin: 12px 16px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; padding: 12px 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span id="discoveryProgressTitle" style="font-weight: 600; font-size: 0.82rem; color: #60a5fa;">DISCOVERY IN PROGRESS</span>
+                <span id="discoveryProgressText" style="font-family: var(--font-mono); font-size: 0.8rem; color: #e2e8f0;">Hosts Checked: 0 / 253</span>
+            </div>
+            <div style="background: rgba(15, 23, 42, 0.8); border-radius: 4px; height: 8px; overflow: hidden;">
+                <div id="discoveryProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.2s ease;"></div>
+            </div>
+        </div>
+
+        <!-- Discovery Diagnostics Summary (Section 12, 13, 46) -->
+        <div id="discoveryDiagnosticsCard" style="display: none; margin: 12px 16px; background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; padding: 14px 18px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <span style="font-weight: 600; font-size: 0.85rem; color: #38bdf8;">🔍 Discovery Diagnostics Summary</span>
+                <span id="diagStatusBadge" class="badge badge-online">Discovery Complete</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; font-size: 0.8rem;">
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">Network:</span> <strong id="diagNetwork" class="font-mono text-primary">—</strong></div>
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">Local Host:</span> <strong id="diagLocalHost" class="font-mono text-accent">—</strong></div>
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">Gateway:</span> <strong id="diagGateway" class="font-mono text-online">—</strong></div>
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">Hosts Checked:</span> <strong id="diagChecked" class="font-mono">—</strong></div>
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">ARP Entries:</span> <strong id="diagArp" class="font-mono text-info">—</strong></div>
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">ICMP Responders:</span> <strong id="diagIcmp" class="font-mono text-info">—</strong></div>
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">Gateway Clients:</span> <strong id="diagGwClients" class="font-mono text-muted">Unavailable (Client Mode)</strong></div>
+                <div><span class="text-muted" style="display:block; font-size:0.72rem;">Visible Devices:</span> <strong id="diagVisible" class="font-mono text-online">—</strong></div>
+            </div>
+            <div id="diagExplanation" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.78rem; color: #94a3b8; line-height: 1.4;"></div>
+        </div>
+
+        <div id="discoveryAlert" class="alert-box" style="display: none; margin: 10px 16px;"></div>
+
+        <!-- Discovered Visible Devices Table (Section 19) -->
+        <div class="table-responsive">
+            <table class="data-table data-table-sm">
+                <thead>
+                    <tr>
+                        <th>IP Address</th>
+                        <th>MAC Address</th>
+                        <th>Hostname</th>
+                        <th>Source</th>
+                        <th>Discovery Latency</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="discoveredTableBody">
+                    <tr>
+                        <td colspan="7" class="text-center text-muted">Click <strong>⚡ Discover Devices</strong> to scan current subnet.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Ping All Visible Devices Results Panel (Section 22, 24) -->
+        <div id="pingAllResultsContainer" style="display: none; margin: 16px 16px 20px 16px; padding: 14px; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h4 style="margin: 0; font-size: 0.88rem; color: #38bdf8;">📊 Ping All Visible Devices Results (5 Probes / Device)</h4>
+                <span id="pingAllSummaryBadge" class="badge badge-online">5 Packets Completed</span>
+            </div>
+            <div class="table-responsive">
+                <table class="data-table data-table-sm" id="pingAllTable">
+                    <thead>
+                        <tr>
+                            <th>DEVICE</th>
+                            <th>STATUS</th>
+                            <th>SENT</th>
+                            <th>RECEIVED</th>
+                            <th>LOSS</th>
+                            <th>AVG</th>
+                            <th>MIN</th>
+                            <th>MAX</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pingAllTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Register Discovered Device Modal -->
+    <div id="quickRegisterModal" class="modal-backdrop" style="display: none;">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>Add Discovered Host to Digital Twin</h3>
+                <button class="modal-close" onclick="closeQuickRegisterModal()">&times;</button>
+            </div>
+            <form id="quickRegisterForm" onsubmit="submitQuickRegister(event)">
+                <div class="modal-body">
+                    <div id="quickRegisterAlert" class="alert-box alert-error" style="display: none; margin-bottom: 12px;"></div>
+                    <div class="form-group">
+                        <label>Assigned Node ID <span class="required">*</span></label>
+                        <input type="text" id="quickDevId" class="form-input" required pattern="[A-Za-z0-9_-]+" placeholder="e.g. LAPTOP_2 or PC_HOTSPOT">
+                        <small class="form-help">Unique node identifier in the Digital Twin graph.</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Device Name <span class="required">*</span></label>
+                        <input type="text" id="quickDevName" class="form-input" required placeholder="e.g. Peer Laptop">
+                    </div>
+                    <div class="form-group">
+                        <label>IPv4 Address</label>
+                        <input type="text" id="quickDevIp" class="form-input font-mono" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>MAC Address</label>
+                        <input type="text" id="quickDevMac" class="form-input font-mono" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>Device Type</label>
+                        <select id="quickDevType" class="form-input">
+                            <option value="Laptop" selected>Laptop</option>
+                            <option value="Computer">Computer / PC</option>
+                            <option value="Smartphone">Smartphone</option>
+                            <option value="Server">Local Test Server</option>
+                            <option value="IoT">IoT Microcontroller</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Description</label>
+                        <input type="text" id="quickDevDesc" class="form-input" placeholder="e.g. Discovered peer on hotspot network">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeQuickRegisterModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="btnQuickRegisterSubmit">+ Add to Digital Twin</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Educational Context Section -->
+    <section class="panel educational-panel">
+        <div class="panel-header" style="border: none; padding-bottom: 0;">
+            <h3 class="panel-title">Engineering Pipeline Architecture</h3>
+        </div>
+        <div class="educational-content">
+            <div class="edu-step">
+                <span class="step-num">STAGE 01</span>
+                <h4>Physical Test Network</h4>
+                <p>Mobile Hotspot provides an isolated WLAN for authorized test devices (Laptops/PCs) in a star arrangement.</p>
+            </div>
+            <div class="edu-arrow">➔</div>
+            <div class="edu-step">
+                <span class="step-num">STAGE 02</span>
+                <h4>Non-Flooding ICMP Ping</h4>
+                <p>Python subprocess sends single-packet ICMP pings at configurable intervals (5s) without degrading Wi-Fi.</p>
+            </div>
+            <div class="edu-arrow">➔</div>
+            <div class="edu-step">
+                <span class="step-num">STAGE 03</span>
+                <h4>NetworkX Digital Twin</h4>
+                <p>In-memory graph updates node and edge properties (latency, availability, connectivity) in real time.</p>
+            </div>
+            <div class="edu-arrow">➔</div>
+            <div class="edu-step">
+                <span class="step-num">STAGE 04</span>
+                <h4>What-If Simulator</h4>
+                <p>Independent copy of the graph executes hypothetical link and node cuts without touching physical machines.</p>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/topology.js') }}"></script>
+{% endblock %}

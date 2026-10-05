@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}What-If Simulation{% endblock %}
+
+{% block content %}
+<div class="dashboard-wrapper">
+    <!-- Mandatory Simulation Isolation Alert -->
+    <div class="sim-banner">
+        <div class="sim-banner-content">
+            <span class="sim-warning-icon">⚠</span>
+            <div>
+                <strong>SIMULATION MODE — NO CHANGES ARE MADE TO THE REAL NETWORK</strong>
+                <p>This engine operates on an isolated in-memory deep copy of the Digital Twin graph. Real devices remain unaffected.</p>
+            </div>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btnResetSim" title="Reset and re-clone live graph">⟲ Reset to Live State</button>
+    </div>
+
+    <!-- Control Toolbar: Topologies & Fault Injection -->
+    <section class="panel control-toolbar-panel">
+        <div class="toolbar-section">
+            <span class="toolbar-label">SIMULATION TOPOLOGY:</span>
+            <div class="btn-group">
+                <button class="btn btn-secondary btn-sm btn-topo active" data-topo="star">★ Star (Hotspot)</button>
+                <button class="btn btn-secondary btn-sm btn-topo" data-topo="ring">◯ Ring Topology</button>
+                <button class="btn btn-secondary btn-sm btn-topo" data-topo="mesh">🕸 Full Mesh</button>
+            </div>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <div class="toolbar-section">
+            <span class="toolbar-label">INJECT FAULT:</span>
+            <div class="action-inline-group">
+                <select id="selectFailDevice" class="form-input form-input-sm"></select>
+                <button class="btn btn-danger btn-sm" id="btnFailDevice">Fail Device</button>
+            </div>
+            
+            <div class="action-inline-group">
+                <select id="selectRecoverDevice" class="form-input form-input-sm"></select>
+                <button class="btn btn-success btn-sm" id="btnRecoverDevice" disabled>Recover</button>
+            </div>
+
+            <div class="action-inline-group">
+                <select id="selectFailLink" class="form-input form-input-sm"></select>
+                <button class="btn btn-danger btn-sm" id="btnFailLink">Sever Link</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Workspace: Canvas & Impact Analysis -->
+    <div class="workspace-grid">
+        <!-- Interactive Simulated Canvas -->
+        <section class="panel topology-panel">
+            <div class="panel-header">
+                <div>
+                    <h2 class="panel-title">Simulated Virtual Topology Canvas</h2>
+                    <span class="panel-subtitle">Visual feedback of hypothetical device or link outages (Failed components in Red)</span>
+                </div>
+                <span class="badge badge-info" id="simTopologyType">STAR</span>
+            </div>
+            <div class="topology-canvas-container" style="position: relative;">
+                <div id="simCyContainer" style="width: 100%; height: 100%;"></div>
+                
+                <div class="canvas-legend">
+                    <span class="legend-item"><span class="legend-dot dot-online"></span> Operational Node</span>
+                    <span class="legend-item"><span class="legend-dot dot-offline"></span> Simulated Failed Node</span>
+                    <span class="legend-item"><span class="legend-dot dot-warning"></span> Isolated / Unreachable</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Impact Analysis Side Panel -->
+        <section class="panel impact-panel">
+            <div class="panel-header">
+                <div>
+                    <h2 class="panel-title">Hypothetical Impact Analysis</h2>
+                    <span class="panel-subtitle">NetworkX Graph Partition Evaluation</span>
+                </div>
+                <span class="badge" id="simSeverityBadge">NORMAL</span>
+            </div>
+
+            <div class="impact-metrics-list">
+                <div class="impact-metric-row">
+                    <span class="impact-label">Total Simulated Nodes:</span>
+                    <strong class="impact-value" id="simTotalNodes">0</strong>
+                </div>
+                <div class="impact-metric-row">
+                    <span class="impact-label">Operational Active Nodes:</span>
+                    <strong class="impact-value text-online" id="simActiveNodes">0</strong>
+                </div>
+                <div class="impact-metric-row">
+                    <span class="impact-label">Simulated Failed Devices:</span>
+                    <strong class="impact-value text-danger" id="simFailedCount">0</strong>
+                </div>
+                <div class="impact-metric-row">
+                    <span class="impact-label">Connected Graph Components:</span>
+                    <strong class="impact-value" id="simComponents">1</strong>
+                </div>
+
+                <div class="impact-block">
+                    <span class="impact-block-title">Failed Components:</span>
+                    <div id="failedDevicesList" class="badge-cluster"></div>
+                </div>
+
+                <div class="impact-block">
+                    <span class="impact-block-title">Unreachable from Gateway:</span>
+                    <div id="unreachableList" class="badge-cluster"></div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Educational Routing & Distance Vector Analysis Panel (Computer Networks Syllabus) -->
+    <section class="panel routing-panel">
+        <div class="panel-header">
+            <div>
+                <h2 class="panel-title">Computer Networks Syllabus Analysis: Routing & Shortest Path</h2>
+                <span class="panel-subtitle">Observe how simulated node or link cuts dynamically break or reroute network traffic</span>
+            </div>
+        </div>
+
+        <div class="routing-tools-grid">
+            <!-- Shortest Path Analysis Tool -->
+            <div class="routing-tool-box">
+                <h4 class="tool-box-title">1. Shortest Path (Dijkstra) Dynamic Route Evaluation</h4>
+                <div class="tool-controls">
+                    <div class="form-group-inline">
+                        <label>Source Node:</label>
+                        <select id="selPathSource" class="form-input form-input-sm"></select>
+                    </div>
+                    <div class="form-group-inline">
+                        <label>Destination Node:</label>
+                        <select id="selPathTarget" class="form-input form-input-sm"></select>
+                    </div>
+                    <button class="btn btn-primary btn-sm" id="btnCalcPath">Trace Route</button>
+                </div>
+
+                <!-- Path Result Card -->
+                <div id="pathResultCard" class="result-card" style="display: none; margin-top: 14px;">
+                    <div class="result-header">
+                        <span class="badge" id="pathStatusBadge">ROUTE ACTIVE</span>
+                        <span class="text-muted" id="pathMetricsDisplay">Hops: 2 | Latency: 2.5 ms</span>
+                    </div>
+                    <div class="result-route" id="pathRouteDisplay"></div>
+                    <p class="result-note" id="pathDetailDisplay"></p>
+                </div>
+            </div>
+
+            <!-- Distance Vector Routing Tool -->
+            <div class="routing-tool-box">
+                <h4 class="tool-box-title">2. Distance Vector Routing Table (Bellman-Ford Concept)</h4>
+                <div class="tool-controls">
+                    <div class="form-group-inline">
+                        <label>Compute Table for Node:</label>
+                        <select id="selDvNode" class="form-input form-input-sm"></select>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" id="btnCalcDV">Generate Table</button>
+                </div>
+
+                <!-- DV Table Result -->
+                <div id="dvResultCard" class="result-card" style="display: none; margin-top: 14px;">
+                    <h5 style="margin-bottom: 8px; font-size: 0.85rem; color: var(--accent-blue);">
+                        Routing Table for: <code id="dvTargetNodeName">PC1</code>
+                    </h5>
+                    <div class="table-responsive">
+                        <table class="data-table data-table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Destination</th>
+                                    <th>Next Hop</th>
+                                    <th>Metric (Hops)</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dvTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/simulation.js') }}"></script>
+{% endblock %}
