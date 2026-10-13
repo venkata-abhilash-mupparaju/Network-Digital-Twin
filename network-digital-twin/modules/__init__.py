@@ -18,7 +18,9 @@ from .network_info import (
     check_network_change,
     parse_ipconfig_output,
     sync_network_session,
-    get_active_session
+    get_active_session,
+    get_current_authorized_devices,
+    ensure_authorized_test_devices
 )
 from .events import (
     log_event,
@@ -52,6 +54,8 @@ __all__ = [
     "parse_ipconfig_output",
     "sync_network_session",
     "get_active_session",
+    "get_current_authorized_devices",
+    "ensure_authorized_test_devices",
     "log_event",
     "get_recent_events",
     "EVENT_NETWORK_CHANGED",

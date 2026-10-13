@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 
 from database import get_db_connection
+from utils.time_utils import enrich_timestamp_dict
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,8 @@ def get_recent_events(limit=50, event_type=None, device_id=None):
             params.append(limit)
 
             cursor.execute(query, tuple(params))
-            return [dict(r) for r in cursor.fetchall()]
+            rows = [dict(r) for r in cursor.fetchall()]
+            return [enrich_timestamp_dict(r) for r in rows]
     except Exception as e:
         logger.error("Error retrieving network events: %s", e)
         return []

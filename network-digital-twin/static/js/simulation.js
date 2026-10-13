@@ -13,6 +13,8 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("btnFailDevice").addEventListener("click", handleFailDevice);
     document.getElementById("btnRecoverDevice").addEventListener("click", handleRecoverDevice);
     document.getElementById("btnFailLink").addEventListener("click", handleFailLink);
+    const btnRecLink = document.getElementById("btnRecoverLink");
+    if (btnRecLink) btnRecLink.addEventListener("click", handleRecoverLink);
     document.getElementById("btnResetSim").addEventListener("click", handleResetSim);
     document.getElementById("btnCalcPath").addEventListener("click", handleCalculatePath);
     document.getElementById("btnCalcDV").addEventListener("click", handleCalculateDV);
@@ -162,6 +164,36 @@ async function fetchSimulationState() {
             }).run();
         }
 
+        // Update Baseline Snapshot Metadata Card
+        const snap = data.impact && data.impact.baseline_snapshot ? data.impact.baseline_snapshot : {};
+        const elSnapNet = document.getElementById("simSnapshotNetwork");
+        if (elSnapNet) elSnapNet.textContent = snap.network_cidr || "Current Subnet";
+        const elSnapGw = document.getElementById("simSnapshotGateway");
+        if (elSnapGw) elSnapGw.textContent = snap.gateway_ip || "Gateway";
+        const elSnapNodes = document.getElementById("simSnapshotNodes");
+        if (elSnapNodes) elSnapNodes.textContent = snap.baseline_node_count !== undefined ? snap.baseline_node_count : (data.impact.baseline_nodes || (data.elements ? data.elements.nodes.length : 0));
+        const elSnapLinks = document.getElementById("simSnapshotLinks");
+        if (elSnapLinks) elSnapLinks.textContent = snap.baseline_link_count !== undefined ? snap.baseline_link_count : (data.impact.baseline_links || (data.elements ? data.elements.edges.length : 0));
+        const elSnapTime = document.getElementById("simSnapshotTime");
+        if (elSnapTime) elSnapTime.textContent = snap.snapshot_time_local || "--:--:--";
+
+        // Update notice banners
+        const emptyNotice = document.getElementById("simEmptyNotice");
+        const activeNotice = document.getElementById("simActiveNotice");
+        const activeNoticeText = document.getElementById("simActiveNoticeText");
+        const nodeCount = data.elements && data.elements.nodes ? data.elements.nodes.length : 0;
+        const hasLive = data.has_live_devices !== undefined ? data.has_live_devices : nodeCount > 1;
+
+        if (emptyNotice) {
+            emptyNotice.style.display = hasLive ? "none" : "block";
+        }
+        if (activeNotice) {
+            activeNotice.style.display = hasLive ? "block" : "none";
+            if (activeNoticeText) {
+                activeNoticeText.textContent = `${nodeCount} authorized nodes cloned from live Digital Twin for What-If simulation.`;
+            }
+        }
+
         // Update Impact Dashboard
         updateImpactUI(data.impact);
 
@@ -178,10 +210,21 @@ async function fetchSimulationState() {
  */
 function updateImpactUI(impact) {
     document.getElementById("simTopologyType").textContent = impact.topology_type;
-    document.getElementById("simTotalNodes").textContent = impact.total_nodes;
-    document.getElementById("simActiveNodes").textContent = impact.active_nodes;
-    document.getElementById("simFailedCount").textContent = impact.failed_nodes.length;
-    document.getElementById("simComponents").textContent = impact.connected_components_count;
+    
+    const elBaseNodes = document.getElementById("simBaselineNodes");
+    if (elBaseNodes) elBaseNodes.textContent = impact.baseline_nodes !== undefined ? impact.baseline_nodes : impact.total_nodes;
+    const elActNodes = document.getElementById("simActiveNodes");
+    if (elActNodes) elActNodes.textContent = impact.active_nodes;
+    const elFailedNodes = document.getElementById("simFailedCount");
+    if (elFailedNodes) elFailedNodes.textContent = impact.failed_nodes.length;
+    const elBaseLinks = document.getElementById("simBaselineLinks");
+    if (elBaseLinks) elBaseLinks.textContent = impact.baseline_links !== undefined ? impact.baseline_links : "-";
+    const elActLinks = document.getElementById("simActiveLinks");
+    if (elActLinks) elActLinks.textContent = impact.active_links !== undefined ? impact.active_links : "-";
+    const elFailedLinks = document.getElementById("simFailedLinks");
+    if (elFailedLinks) elFailedLinks.textContent = impact.failed_links_count !== undefined ? impact.failed_links_count : impact.failed_links.length;
+    const elComp = document.getElementById("simComponents");
+    if (elComp) elComp.textContent = impact.connected_components_count;
 
     const sevBadge = document.getElementById("simSeverityBadge");
     if (impact.impact_severity === "CRITICAL") {
@@ -219,18 +262,31 @@ function populateDropdowns(nodes, edges, failedNodes) {
     const selTarget = document.getElementById("selPathTarget");
     const selDvNode = document.getElementById("selDvNode");
     const selLink = document.getElementById("selectFailLink");
+    const selRecLink = document.getElementById("selectRecoverLink");
 
     const activeNodes = nodes.filter(n => !failedNodes.includes(n.data.id));
 
     // Fail Device dropdown (only currently active devices)
-    selFailDev.innerHTML = activeNodes.map(n => `<option value="${n.data.id}">${n.data.label} (${n.data.id})</option>`).join("");
+    selFailDev.innerHTML = activeNodes.map(n => {
+        const liveSt = n.data.live_status ? ` [Current: ${n.data.live_status}]` : "";
+        const ipStr = n.data.ip ? ` — ${n.data.ip}` : "";
+        return `<option value="${n.data.id}">${n.data.label} (${n.data.id})${ipStr}${liveSt}</option>`;
+    }).join("");
+    document.getElementById("btnFailDevice").disabled = activeNodes.length === 0;
     
     // Recover Device dropdown (only failed devices)
-    selRecDev.innerHTML = failedNodes.map(id => `<option value="${id}">${id}</option>`).join("");
+    selRecDev.innerHTML = failedNodes.map(id => {
+        const nodeObj = nodes.find(n => n.data.id === id);
+        const label = nodeObj ? `${nodeObj.data.label} (${id})` : id;
+        return `<option value="${id}">${label}</option>`;
+    }).join("");
     document.getElementById("btnRecoverDevice").disabled = failedNodes.length === 0;
 
     // Path analysis dropdowns
-    const nodeOptions = nodes.map(n => `<option value="${n.data.id}">${n.data.label} (${n.data.id})</option>`).join("");
+    const nodeOptions = nodes.map(n => {
+        const ipStr = n.data.ip ? ` — ${n.data.ip}` : "";
+        return `<option value="${n.data.id}">${n.data.label} (${n.data.id})${ipStr}</option>`;
+    }).join("");
     selSource.innerHTML = nodeOptions;
     selTarget.innerHTML = nodeOptions;
     selDvNode.innerHTML = nodeOptions;
@@ -240,10 +296,41 @@ function populateDropdowns(nodes, edges, failedNodes) {
         selTarget.selectedIndex = 1;
     }
 
-    // Fail Link dropdown
-    selLink.innerHTML = edges.map(e => {
+    // Fail Link dropdown (only active links)
+    const activeEdges = edges.filter(e => e.data.status !== "FAILED" && !e.data.is_simulated_failed);
+    selLink.innerHTML = activeEdges.map(e => {
         return `<option value="${e.data.source}|${e.data.target}">${e.data.source} ⟷ ${e.data.target}</option>`;
     }).join("");
+    const btnFailLink = document.getElementById("btnFailLink");
+    if (btnFailLink) btnFailLink.disabled = activeEdges.length === 0;
+
+    // Recover Link dropdown (only severed links)
+    const failedEdges = edges.filter(e => e.data.status === "FAILED" || e.data.is_simulated_failed);
+    if (selRecLink) {
+        selRecLink.innerHTML = failedEdges.map(e => {
+            return `<option value="${e.data.source}|${e.data.target}">${e.data.source} ⟷ ${e.data.target}</option>`;
+        }).join("");
+        const btnRecLink = document.getElementById("btnRecoverLink");
+        if (btnRecLink) btnRecLink.disabled = failedEdges.length === 0;
+    }
+}
+
+/**
+ * Sends link recovery to simulation API.
+ */
+async function handleRecoverLink() {
+    const selRecLink = document.getElementById("selectRecoverLink");
+    if (!selRecLink || !selRecLink.value) return;
+    const [source, target] = selRecLink.value.split("|");
+
+    const res = await fetch("/api/simulation/link-recovery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, target })
+    });
+    if (res.ok) {
+        await fetchSimulationState();
+    }
 }
 
 /**

@@ -36,38 +36,40 @@ class RoutingEngine:
             }
 
         # Verify operational status of endpoints
-        source_status = graph.nodes[source].get("status", "UNKNOWN")
-        target_status = graph.nodes[target].get("status", "UNKNOWN")
+        source_data = graph.nodes[source]
+        target_data = graph.nodes[target]
+        source_failed = source_data.get("status") == "FAILED" or source_data.get("is_simulated_failed")
+        target_failed = target_data.get("status") == "FAILED" or target_data.get("is_simulated_failed")
 
-        if source_status == "FAILED" or source_status == "OFFLINE":
+        if source_failed:
             return {
                 "found": False,
                 "path": [],
                 "path_names": [],
                 "hop_count": 0,
                 "total_latency": 0.0,
-                "details": f"Source node '{source}' is currently {source_status}."
+                "details": f"Source node '{source}' is currently FAILED (simulated outage)."
             }
 
-        if target_status == "FAILED" or target_status == "OFFLINE":
+        if target_failed:
             return {
                 "found": False,
                 "path": [],
                 "path_names": [],
                 "hop_count": 0,
                 "total_latency": 0.0,
-                "details": f"Destination node '{target}' is currently {target_status}."
+                "details": f"Destination node '{target}' is currently FAILED (simulated outage)."
             }
 
-        # Build an operational subgraph containing only active, online nodes and links
+        # Build an operational subgraph containing only active, operational nodes and links
         active_subgraph = nx.Graph()
         for node, data in graph.nodes(data=True):
-            if data.get("status") not in ["FAILED", "OFFLINE"]:
+            if not data.get("is_simulated_failed") and data.get("status") != "FAILED":
                 active_subgraph.add_node(node, **data)
 
         for u, v, data in graph.edges(data=True):
             if (u in active_subgraph and v in active_subgraph and 
-                data.get("status") not in ["FAILED", "INACTIVE"]):
+                not data.get("is_simulated_failed") and data.get("status") != "FAILED"):
                 weight = data.get("latency") or 1.0
                 active_subgraph.add_edge(u, v, weight=weight, **data)
 
@@ -123,10 +125,11 @@ class RoutingEngine:
         # Filter active nodes/links
         active_subgraph = nx.Graph()
         for n, data in graph.nodes(data=True):
-            if data.get("status") not in ["FAILED", "OFFLINE"]:
+            if not data.get("is_simulated_failed") and data.get("status") != "FAILED":
                 active_subgraph.add_node(n, **data)
         for u, v, data in graph.edges(data=True):
-            if u in active_subgraph and v in active_subgraph and data.get("status") not in ["FAILED", "INACTIVE"]:
+            if (u in active_subgraph and v in active_subgraph and 
+                not data.get("is_simulated_failed") and data.get("status") != "FAILED"):
                 active_subgraph.add_edge(u, v)
 
         table = []

@@ -19,6 +19,15 @@ from config import (
     PING_COUNT, PING_TIMEOUT
 )
 from database import init_db, get_db_connection
+from utils.time_utils import (
+    utc_now,
+    utc_iso,
+    format_local_time,
+    format_local_iso,
+    format_display_time,
+    enrich_timestamp_dict,
+    enrich_session_dict
+)
 from modules import (
     DigitalTwinNetwork,
     NetworkMonitor,
@@ -33,6 +42,8 @@ from modules import (
     check_network_change,
     sync_network_session,
     get_active_session,
+    get_current_authorized_devices,
+    ensure_authorized_test_devices,
     log_event,
     get_recent_events,
     EVENT_NETWORK_CHANGED,
@@ -71,50 +82,28 @@ simulator = NetworkSimulator(digital_twin)
 monitor = NetworkMonitor(digital_twin, interval=DEFAULT_MONITOR_INTERVAL)
 
 
-def seed_sample_devices_if_empty(current_net_id=None):
-    """Populates initial sample devices in DB if empty, ensuring stale devices are isolated."""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) AS cnt FROM devices")
-            row = cursor.fetchone()
-            if row and row["cnt"] == 0:
-                logger.info("Seeding initial authorized test devices...")
-                sample_devices = [
-                    ("PC1", "Local Host Loopback", "127.0.0.1", "Laptop", "Host loopback probe", current_net_id, "ONLINE", 1, "AUTHORIZED", "MANUAL"),
-                    ("PC2", "Previous Hotspot Device 2", "192.168.43.102", "Laptop", "Previous Hotspot device", "Wi-Fi|192.168.43.0/24|192.168.43.1", "STALE", 1, "AUTHORIZED", "MANUAL"),
-                    ("PC3", "Previous Hotspot Device 3", "192.168.43.103", "Laptop", "Previous Hotspot device", "Wi-Fi|192.168.43.0/24|192.168.43.1", "STALE", 1, "AUTHORIZED", "MANUAL"),
-                ]
-                cursor.executemany(
-                    """
-                    INSERT INTO devices (device_id, device_name, ip_address, device_type, description, network_id, status, is_monitored, authorization_status, source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    sample_devices
-                )
-                conn.commit()
+def sync_initial_network_twin(net_info, session_id):
+    """
+    Synchronizes initial network twin with authorized devices on current network.
+    Ensures baseline authorized devices exist and populates the Digital Twin graph.
+    """
+    if net_info.get("gateway"):
+        digital_twin.update_gateway_ip(net_info["gateway"])
 
-            # Load ONLY current network monitored devices into the Digital Twin graph!
-            cursor.execute(
-                """
-                SELECT device_id, device_name, ip_address, device_type, description, status, network_id
-                FROM devices
-                WHERE network_id = ? AND is_monitored = 1
-                """,
-                (current_net_id,)
-            )
-            current_devices = [dict(r) for r in cursor.fetchall()]
-            for dev in current_devices:
-                digital_twin.add_device(
-                    device_id=dev["device_id"],
-                    name=dev["device_name"],
-                    ip=dev["ip_address"],
-                    device_type=dev["device_type"],
-                    description=dev["description"]
-                )
-            logger.info("Loaded %d current network device(s) into Digital Twin graph.", len(current_devices))
-    except Exception as e:
-        logger.error("Error initializing device list: %s", e)
+    # Ensure baseline authorized devices exist for this network session
+    authorized = get_current_authorized_devices(net_info)
+    if not authorized:
+        authorized = ensure_authorized_test_devices(net_info)
+
+    monitored = [d for d in authorized if d.get("is_monitored") == 1]
+    digital_twin.sync_with_current_network(
+        gateway_ip=net_info.get("gateway"),
+        authorized_devices=authorized,
+        monitored_devices=monitored,
+        session_id=session_id,
+        network_cidr=net_info.get("network")
+    )
+    logger.info("Initialized Digital Twin with %d authorized device(s) on %s", len(authorized), net_info.get("network_id"))
 
 
 # Initialize DB
@@ -125,12 +114,9 @@ initial_net = get_current_network_info()
 initial_net_id = initial_net.get("network_id")
 initial_session_id = sync_network_session(initial_net)
 
-if initial_net.get("gateway"):
-    digital_twin.update_gateway_ip(initial_net["gateway"])
+sync_initial_network_twin(initial_net, initial_session_id)
 
-seed_sample_devices_if_empty(initial_net_id)
-
-simulator.clone_from_digital_twin(digital_twin)
+simulator.clone_from_digital_twin(digital_twin, initial_net)
 monitor.start()
 
 
@@ -158,7 +144,7 @@ def index():
                 stale_count = st_row["cnt"]
 
             cursor.execute("SELECT * FROM network_events ORDER BY id DESC LIMIT 8")
-            recent_events = cursor.fetchall()
+            recent_events = [enrich_timestamp_dict(dict(r)) for r in cursor.fetchall()]
     except Exception as e:
         logger.error("Error fetching dashboard data: %s", e)
 
@@ -226,30 +212,51 @@ def history_page():
     sessions = []
     total_pings = 0
     uptime_pct = 100.0
+    total_events = 0
+    monitored_devices_count = 0
+    net_info = get_current_network_info()
+    current_net_id = net_info.get("network_id")
 
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # Fetch recent events
-            cursor.execute("SELECT * FROM network_events ORDER BY id DESC LIMIT 50")
-            events = cursor.fetchall()
+            # Fetch recent events enriched with IST and UTC timestamps
+            cursor.execute("SELECT * FROM network_events ORDER BY id DESC LIMIT 100")
+            events = [enrich_timestamp_dict(dict(r)) for r in cursor.fetchall()]
             
-            # Fetch recent status checks
-            cursor.execute("SELECT * FROM device_status ORDER BY id DESC LIMIT 50")
-            statuses = cursor.fetchall()
+            # Fetch recent status checks enriched with device name and local timestamps
+            cursor.execute("""
+                SELECT s.*, d.device_name
+                FROM device_status s
+                LEFT JOIN devices d ON s.device_id = d.device_id
+                ORDER BY s.id DESC LIMIT 100
+            """)
+            statuses = [enrich_timestamp_dict(dict(r)) for r in cursor.fetchall()]
 
-            # Fetch network sessions
-            cursor.execute("SELECT * FROM network_sessions ORDER BY session_id DESC LIMIT 20")
-            sessions = cursor.fetchall()
+            # Fetch network sessions enriched with local start/end times
+            cursor.execute("SELECT * FROM network_sessions ORDER BY session_id DESC LIMIT 50")
+            sessions = [enrich_session_dict(dict(r)) for r in cursor.fetchall()]
 
-            # Compute historical uptime %
+            # Compute historical uptime % and ping total
             cursor.execute("SELECT COUNT(*) AS total, SUM(CASE WHEN status='ONLINE' THEN 1 ELSE 0 END) AS online_cnt FROM device_status")
             stats_row = cursor.fetchone()
             if stats_row and stats_row["total"] > 0:
                 total_pings = stats_row["total"]
                 online_pings = stats_row["online_cnt"] or 0
                 uptime_pct = round((online_pings / total_pings) * 100, 1)
+
+            # Total events logged
+            cursor.execute("SELECT COUNT(*) AS cnt FROM network_events")
+            ev_cnt_row = cursor.fetchone()
+            if ev_cnt_row:
+                total_events = ev_cnt_row["cnt"]
+
+            # Current monitored devices count
+            cursor.execute("SELECT COUNT(*) AS cnt FROM devices WHERE network_id = ? AND is_monitored = 1", (current_net_id,))
+            dev_cnt_row = cursor.fetchone()
+            if dev_cnt_row:
+                monitored_devices_count = dev_cnt_row["cnt"]
     except Exception as e:
         logger.error("Error fetching history: %s", e)
 
@@ -261,7 +268,9 @@ def history_page():
         sessions=sessions,
         total_pings=total_pings,
         uptime_pct=uptime_pct,
-        total_events=len(events)
+        total_events=total_events,
+        monitored_devices_count=monitored_devices_count,
+        current_network=net_info
     )
 
 
@@ -285,10 +294,14 @@ def api_status():
     except Exception:
         pass
 
+    now_utc = utc_now()
     return jsonify({
         "status": "operational",
         "mode": "LIVE_MONITORING",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": utc_iso(now_utc),
+        "timestamp_utc": utc_iso(now_utc),
+        "timestamp_local": format_local_time(now_utc),
+        "timestamp_local_iso": format_local_iso(now_utc),
         "current_network": net_info,
         "gateway": {
             "id": HOTSPOT_GATEWAY_ID,
@@ -333,26 +346,9 @@ def api_network_refresh():
 
 @app.route("/api/digital-twin", methods=["GET"])
 def api_digital_twin():
-    """Returns high-level metadata and node summary of the live Digital Twin."""
+    """Returns high-level metadata, architectural node states, and summary of the live Digital Twin."""
     net_info = get_current_network_info()
-    current_net_id = net_info.get("network_id")
-    stale_count = 0
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) AS cnt FROM devices WHERE (network_id != ? OR network_id IS NULL)", (current_net_id,))
-            row = cursor.fetchone()
-            if row:
-                stale_count = row["cnt"]
-    except Exception:
-        pass
-
-    return jsonify({
-        "mode": "LIVE_MONITORING",
-        "network_id": current_net_id,
-        "elements": digital_twin.to_cytoscape_elements(),
-        "summary": digital_twin.get_summary(stale_count=stale_count)
-    })
+    return jsonify(digital_twin.to_api_dict(net_info))
 
 
 @app.route("/api/digital-twin/topology", methods=["GET"])
@@ -407,7 +403,7 @@ def api_telemetry():
 
             cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
-            return jsonify([dict(r) for r in rows])
+            return jsonify([enrich_timestamp_dict(dict(r)) for r in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -430,7 +426,7 @@ def api_sessions():
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM network_sessions ORDER BY session_id DESC LIMIT 50")
             rows = cursor.fetchall()
-            return jsonify([dict(r) for r in rows])
+            return jsonify([enrich_session_dict(dict(r)) for r in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1091,10 +1087,43 @@ def api_adopt_device(device_id):
 @app.route("/api/simulation/impact", methods=["GET"])
 def api_sim_state():
     """Returns the simulated graph elements and impact analysis."""
+    net_info = get_current_network_info()
+    # If sync=1 or if simulator is empty but digital_twin has nodes and no failures injected, auto-sync
+    if request.args.get("sync") == "1" or (
+        simulator.sim_graph.number_of_nodes() <= 1 and 
+        digital_twin.graph.number_of_nodes() > 1 and 
+        not simulator.failed_nodes and not simulator.failed_links
+    ):
+        simulator.clone_from_digital_twin(digital_twin, net_info)
+
+    impact = simulator.analyze_impact()
     return jsonify({
         "mode": "WHAT_IF_SIMULATION",
+        "topology_type": simulator.topology_type.upper(),
+        "has_live_devices": impact.get("has_live_devices", True),
+        "warning": impact.get("warning"),
         "elements": simulator.to_cytoscape_elements(),
-        "impact": simulator.analyze_impact()
+        "impact": impact
+    })
+
+
+@app.route("/api/simulation/initialize", methods=["POST", "GET"])
+@app.route("/api/simulation/init", methods=["POST"])
+@app.route("/api/simulation/sync", methods=["POST"])
+def api_sim_initialize():
+    """Initializes or resets the simulation graph from the live Digital Twin."""
+    net_info = get_current_network_info()
+    simulator.clone_from_digital_twin(digital_twin, net_info)
+    log_event("SIMULATION", EVENT_SIMULATION_RESET, "What-If simulation initialized from current live Digital Twin.")
+    impact = simulator.analyze_impact()
+    return jsonify({
+        "status": "success",
+        "message": "Simulation initialized from live Digital Twin.",
+        "topology_type": simulator.topology_type.upper(),
+        "has_live_devices": impact.get("has_live_devices", True),
+        "warning": impact.get("warning"),
+        "elements": simulator.to_cytoscape_elements(),
+        "impact": impact
     })
 
 
@@ -1127,6 +1156,8 @@ def api_sim_fail_device():
 
 
 @app.route("/api/simulation/recovery", methods=["POST"])
+@app.route("/api/simulation/device-recovery", methods=["POST"])
+@app.route("/api/simulation/recover-device", methods=["POST"])
 def api_sim_recover_device():
     """Simulates hypothetical device recovery."""
     data = request.get_json() or {}
@@ -1153,11 +1184,18 @@ def api_sim_recover_device():
 
 
 @app.route("/api/simulation/link-failure", methods=["POST"])
+@app.route("/api/simulation/fail-link", methods=["POST"])
 def api_sim_fail_link():
     """Simulates hypothetical severing of a network link."""
     data = request.get_json() or {}
     source = data.get("source")
     target = data.get("target")
+    if not source and "link" in data and "|" in str(data["link"]):
+        source, target = str(data["link"]).split("|", 1)
+
+    if not source or not target:
+        return jsonify({"error": "source and target (or link formatted as 'u|v') required"}), 400
+
     success, msg = simulator.simulate_link_failure(source, target)
     if not success:
         return jsonify({"error": msg}), 400
@@ -1167,6 +1205,40 @@ def api_sim_fail_link():
             conn.execute(
                 "INSERT INTO network_events (device_id, event_type, message) VALUES (?, ?, ?)",
                 (f"{source}-{target}", "SIMULATION", f"[WHAT-IF] Simulated failure of link {source} <-> {target}")
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "success",
+        "message": msg,
+        "impact": simulator.analyze_impact()
+    })
+
+
+@app.route("/api/simulation/link-recovery", methods=["POST"])
+@app.route("/api/simulation/recover-link", methods=["POST"])
+def api_sim_recover_link():
+    """Simulates hypothetical recovery of a severed link."""
+    data = request.get_json() or {}
+    source = data.get("source")
+    target = data.get("target")
+    if not source and "link" in data and "|" in str(data["link"]):
+        source, target = str(data["link"]).split("|", 1)
+
+    if not source or not target:
+        return jsonify({"error": "source and target (or link formatted as 'u|v') required"}), 400
+
+    success, msg = simulator.simulate_link_recovery(source, target)
+    if not success:
+        return jsonify({"error": msg}), 400
+
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO network_events (device_id, event_type, message) VALUES (?, ?, ?)",
+                (f"{source}-{target}", "SIMULATION", f"[WHAT-IF] Simulated recovery of link {source} <-> {target}")
             )
             conn.commit()
     except Exception:
@@ -1198,7 +1270,8 @@ def api_sim_topology():
 @app.route("/api/simulation/reset", methods=["POST"])
 def api_sim_reset():
     """Resets the simulation by re-cloning the live Digital Twin state."""
-    simulator.clone_from_digital_twin(digital_twin)
+    net_info = get_current_network_info()
+    simulator.clone_from_digital_twin(digital_twin, net_info)
     log_event("SYSTEM", EVENT_SIMULATION_RESET, "What-If simulation reset to current live Digital Twin state.")
     return jsonify({
         "status": "success",

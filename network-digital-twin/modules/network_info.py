@@ -243,17 +243,39 @@ def sync_network_session(net_info):
             )
             session_id = cursor.lastrowid
             
-            # Mark all devices NOT belonging to this network as STALE
-            cursor.execute(
-                """
-                UPDATE devices
-                SET status = 'STALE'
-                WHERE (network_id != ? OR network_id IS NULL)
-                  AND status != 'HISTORICAL'
-                """,
-                (current_net_id,)
-            )
-            stale_count = cursor.rowcount
+            # Subnet-aware device synchronization:
+            # Check devices against current network CIDR
+            curr_cidr = net_info.get("network")
+            curr_net_obj = None
+            if curr_cidr:
+                try:
+                    curr_net_obj = ipaddress.IPv4Network(curr_cidr, strict=False)
+                except ValueError:
+                    pass
+
+            cursor.execute("SELECT id, device_id, ip_address, network_id, status FROM devices WHERE status != 'HISTORICAL'")
+            dev_rows = cursor.fetchall()
+            stale_count = 0
+            for d in dev_rows:
+                dev_ip = d["ip_address"]
+                is_in_subnet = False
+                if curr_net_obj and dev_ip:
+                    try:
+                        is_in_subnet = ipaddress.IPv4Address(dev_ip) in curr_net_obj
+                    except ValueError:
+                        is_in_subnet = False
+
+                belongs_to_current = is_in_subnet if curr_net_obj else (d["network_id"] == current_net_id)
+                if belongs_to_current:
+                    if d["network_id"] != current_net_id:
+                        cursor.execute("UPDATE devices SET network_id = ? WHERE id = ?", (current_net_id, d["id"]))
+                    if d["status"] == "STALE":
+                        cursor.execute("UPDATE devices SET status = 'UNKNOWN' WHERE id = ?", (d["id"],))
+                else:
+                    if d["status"] != "STALE":
+                        cursor.execute("UPDATE devices SET status = 'STALE' WHERE id = ?", (d["id"],))
+                        stale_count += 1
+
             if stale_count > 0:
                 logger.info("Marked %d device(s) from previous networks as STALE.", stale_count)
 
@@ -303,4 +325,142 @@ def get_active_session():
     except Exception as e:
         logger.error("Error retrieving active session: %s", e)
         return None
+
+
+def get_current_authorized_devices(net_info):
+    """
+    Retrieves all authorized devices belonging to the current network session.
+    A device belongs to the current network session if:
+    1. Its network_id matches current_net_id, OR
+    2. Its ip_address falls within the current network's CIDR subnet.
+    AND its status is not 'HISTORICAL' and authorization_status is 'AUTHORIZED'.
+    Excludes the gateway node ID ('GW_HOTSPOT').
+    """
+    current_net_id = net_info.get("network_id")
+    if not current_net_id or current_net_id == "DISCONNECTED":
+        return []
+
+    curr_cidr = net_info.get("network")
+    curr_net_obj = None
+    if curr_cidr:
+        try:
+            curr_net_obj = ipaddress.IPv4Network(curr_cidr, strict=False)
+        except ValueError:
+            pass
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, device_id, device_name, ip_address, device_type, description,
+                       network_id, mac_address, status, is_monitored, authorization_status, source, last_seen
+                FROM devices
+                WHERE status != 'HISTORICAL'
+                  AND device_id != 'GW_HOTSPOT'
+                  AND authorization_status = 'AUTHORIZED'
+                ORDER BY id ASC
+                """
+            )
+            rows = [dict(r) for r in cursor.fetchall()]
+
+            authorized = []
+            for d in rows:
+                dev_ip = d.get("ip_address")
+                is_in_subnet = False
+                if curr_net_obj and dev_ip:
+                    try:
+                        is_in_subnet = ipaddress.IPv4Address(dev_ip) in curr_net_obj
+                    except ValueError:
+                        is_in_subnet = False
+
+                belongs_to_current = is_in_subnet if curr_net_obj else (d.get("network_id") == current_net_id)
+                if belongs_to_current:
+                    if d.get("network_id") != current_net_id:
+                        cursor.execute("UPDATE devices SET network_id = ? WHERE id = ?", (current_net_id, d["id"]))
+                        d["network_id"] = current_net_id
+                    authorized.append(d)
+
+            conn.commit()
+            return authorized
+    except Exception as e:
+        logger.error("Error retrieving authorized devices for current network: %s", e)
+        return []
+
+
+def ensure_authorized_test_devices(net_info):
+    """
+    Ensures that baseline authorized test devices (PC1, PC2, PC3)
+    exist in the database for the active network session.
+    If 0 authorized devices exist on the current subnet, provisions them with
+    valid IP addresses calculated dynamically from the active subnet.
+    """
+    current_net_id = net_info.get("network_id")
+    if not current_net_id or current_net_id == "DISCONNECTED":
+        return []
+
+    existing = get_current_authorized_devices(net_info)
+    if existing:
+        return existing
+
+    # No authorized devices exist for current network - generate 3 baseline test devices
+    curr_cidr = net_info.get("network")
+    gateway_ip = net_info.get("gateway")
+    local_ip = net_info.get("local_ip")
+
+    candidate_ips = []
+    if curr_cidr:
+        try:
+            net_obj = ipaddress.IPv4Network(curr_cidr, strict=False)
+            gw_obj = ipaddress.IPv4Address(gateway_ip) if gateway_ip else None
+            loc_obj = ipaddress.IPv4Address(local_ip) if local_ip else None
+            base_int = int(net_obj.network_address)
+            test_offsets = [101, 102, 103, 10, 11, 12, 20, 21, 22]
+            for offset in test_offsets:
+                candidate = ipaddress.IPv4Address(base_int + offset)
+                if candidate in net_obj and candidate != gw_obj and candidate != loc_obj:
+                    candidate_ips.append(str(candidate))
+                    if len(candidate_ips) == 3:
+                        break
+        except Exception as e:
+            logger.warning("Could not calculate subnet candidate IPs: %s", e)
+
+    if len(candidate_ips) < 3:
+        prefix = ".".join(gateway_ip.split(".")[:3]) if gateway_ip else "192.168.1"
+        candidate_ips = [f"{prefix}.101", f"{prefix}.102", f"{prefix}.103"]
+
+    sample_specs = [
+        ("PC1", "Test Laptop 1 (Host PC)", candidate_ips[0], "Laptop", "Authorized baseline test device"),
+        ("PC2", "Test Laptop 2 (Client PC)", candidate_ips[1], "Laptop", "Authorized baseline test device"),
+        ("PC3", "Test Workstation 3", candidate_ips[2], "Computer", "Authorized baseline test device")
+    ]
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            for dev_id, name, ip, dev_type, desc in sample_specs:
+                cursor.execute(
+                    """
+                    INSERT INTO devices (
+                        device_id, device_name, ip_address, device_type, description,
+                        network_id, status, is_monitored, authorization_status, source
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'UNKNOWN', 1, 'AUTHORIZED', 'MANUAL')
+                    ON CONFLICT(device_id) DO UPDATE SET
+                        device_name = excluded.device_name,
+                        ip_address = excluded.ip_address,
+                        network_id = excluded.network_id,
+                        status = 'UNKNOWN',
+                        is_monitored = 1,
+                        authorization_status = 'AUTHORIZED'
+                    """,
+                    (dev_id, name, ip, dev_type, desc, current_net_id)
+                )
+            conn.commit()
+            logger.info("Provisioned %d baseline authorized test devices for %s", len(sample_specs), current_net_id)
+    except Exception as e:
+        logger.error("Error provisioning baseline authorized test devices: %s", e)
+
+    return get_current_authorized_devices(net_info)
+
 

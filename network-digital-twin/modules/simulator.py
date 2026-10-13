@@ -12,6 +12,7 @@ import logging
 import networkx as nx
 
 from config import HOTSPOT_GATEWAY_ID, HOTSPOT_GATEWAY_NAME
+from utils.time_utils import utc_now, utc_iso, format_local_time
 from .routing import RoutingEngine
 
 logger = logging.getLogger(__name__)
@@ -22,25 +23,61 @@ class NetworkSimulator:
         Initializes the simulation environment.
         Holds an independent copy of the Digital Twin graph.
         """
+        self.digital_twin = digital_twin
         self.sim_graph = nx.Graph()
         self.topology_type = "star"  # Default physical topology
         self.failed_nodes = set()
         self.failed_links = set()   # set of tuples (u, v) sorted
         self.simulation_actions_log = []
+        self.baseline_snapshot = {}
         
         if digital_twin:
             self.clone_from_digital_twin(digital_twin)
 
-    def clone_from_digital_twin(self, digital_twin):
+    def clone_from_digital_twin(self, digital_twin=None, network_info=None):
         """
         Creates an independent deep copy of the live Digital Twin graph.
         Resets any previous simulation changes.
+        Initializes all authorized twin nodes as active operational simulation components.
         """
-        # nx.Graph.copy() creates a complete copy of nodes, edges, and their attribute dictionaries
-        self.sim_graph = digital_twin.graph.copy()
+        if digital_twin is not None:
+            self.digital_twin = digital_twin
+
+        if self.digital_twin is not None:
+            self.sim_graph = self.digital_twin.graph.copy()
+            # In simulation, nodes and edges start as ACTIVE operational components of the architecture
+            for node, data in self.sim_graph.nodes(data=True):
+                data["simulated_status"] = "ACTIVE"
+                data["is_simulated_failed"] = False
+                data["baseline_live_status"] = data.get("live_status", data.get("status", "ONLINE"))
+                data["status"] = "ONLINE"
+
+            for u, v, data in self.sim_graph.edges(data=True):
+                data["simulated_status"] = "ACTIVE"
+                data["is_simulated_failed"] = False
+                data["status"] = "ACTIVE"
+        else:
+            self.sim_graph = nx.Graph()
+
         self.failed_nodes.clear()
         self.failed_links.clear()
         self.topology_type = "star"
+
+        # Record baseline snapshot details for UI cards and audit
+        now_dt = utc_now()
+        net = network_info or {}
+        gw_ip = getattr(self.digital_twin, "gateway_ip", None) if self.digital_twin else None
+        self.baseline_snapshot = {
+            "network_cidr": net.get("network", "N/A"),
+            "gateway_ip": net.get("gateway", gw_ip or "N/A"),
+            "baseline_nodes": list(self.sim_graph.nodes()),
+            "baseline_node_count": self.sim_graph.number_of_nodes(),
+            "baseline_links": [f"{u} <-> {v}" for u, v in self.sim_graph.edges()],
+            "baseline_link_count": self.sim_graph.number_of_edges(),
+            "snapshot_time_utc": utc_iso(now_dt),
+            "snapshot_time_local": format_local_time(now_dt)
+        }
+
         self._log_action("CLONE", "Cloned fresh state from live Digital Twin graph.")
         logger.info("Simulation initialized with %d nodes and %d edges.", 
                     self.sim_graph.number_of_nodes(), self.sim_graph.number_of_edges())
@@ -60,11 +97,15 @@ class NetworkSimulator:
             return False, f"Device '{device_id}' does not exist in simulation."
 
         self.sim_graph.nodes[device_id]["status"] = "FAILED"
+        self.sim_graph.nodes[device_id]["simulated_status"] = "FAILED"
+        self.sim_graph.nodes[device_id]["is_simulated_failed"] = True
         self.failed_nodes.add(device_id)
 
         # Mark all incident links as FAILED
         for neighbor in list(self.sim_graph.neighbors(device_id)):
             self.sim_graph.edges[device_id, neighbor]["status"] = "FAILED"
+            self.sim_graph.edges[device_id, neighbor]["simulated_status"] = "FAILED"
+            self.sim_graph.edges[device_id, neighbor]["is_simulated_failed"] = True
             link_key = tuple(sorted([device_id, neighbor]))
             self.failed_links.add(link_key)
 
@@ -75,19 +116,23 @@ class NetworkSimulator:
 
     def simulate_device_recovery(self, device_id):
         """
-        Restores a failed device back to operational ONLINE status in the simulation.
+        Restores a failed device back to operational ACTIVE status in the simulation.
         """
         if device_id not in self.sim_graph:
             return False, f"Device '{device_id}' does not exist in simulation."
 
         self.sim_graph.nodes[device_id]["status"] = "ONLINE"
+        self.sim_graph.nodes[device_id]["simulated_status"] = "ACTIVE"
+        self.sim_graph.nodes[device_id]["is_simulated_failed"] = False
         if device_id in self.failed_nodes:
             self.failed_nodes.remove(device_id)
 
         # Restore incident links where the other endpoint is also operational
         for neighbor in list(self.sim_graph.neighbors(device_id)):
-            if neighbor not in self.failed_nodes and self.sim_graph.nodes[neighbor].get("status") != "FAILED":
+            if neighbor not in self.failed_nodes and not self.sim_graph.nodes[neighbor].get("is_simulated_failed"):
                 self.sim_graph.edges[device_id, neighbor]["status"] = "ACTIVE"
+                self.sim_graph.edges[device_id, neighbor]["simulated_status"] = "ACTIVE"
+                self.sim_graph.edges[device_id, neighbor]["is_simulated_failed"] = False
                 link_key = tuple(sorted([device_id, neighbor]))
                 if link_key in self.failed_links:
                     self.failed_links.remove(link_key)
@@ -105,6 +150,8 @@ class NetworkSimulator:
             return False, f"No link exists between '{u}' and '{v}'."
 
         self.sim_graph.edges[u, v]["status"] = "FAILED"
+        self.sim_graph.edges[u, v]["simulated_status"] = "FAILED"
+        self.sim_graph.edges[u, v]["is_simulated_failed"] = True
         link_key = tuple(sorted([u, v]))
         self.failed_links.add(link_key)
 
@@ -121,6 +168,8 @@ class NetworkSimulator:
             return False, f"No link exists between '{u}' and '{v}'."
 
         self.sim_graph.edges[u, v]["status"] = "ACTIVE"
+        self.sim_graph.edges[u, v]["simulated_status"] = "ACTIVE"
+        self.sim_graph.edges[u, v]["is_simulated_failed"] = False
         link_key = tuple(sorted([u, v]))
         if link_key in self.failed_links:
             self.failed_links.remove(link_key)
@@ -149,7 +198,18 @@ class NetworkSimulator:
         gateway = HOTSPOT_GATEWAY_ID if HOTSPOT_GATEWAY_ID in self.sim_graph else nodes[0]
         other_nodes = [n for n in nodes if n != gateway]
 
-        if topo == "star":
+        if topo in ("live", "current"):
+            # Restore the live topology edges from Digital Twin if available
+            if self.digital_twin and hasattr(self.digital_twin, "graph"):
+                for u, v, data in self.digital_twin.graph.edges(data=True):
+                    if u in self.sim_graph and v in self.sim_graph:
+                        self.sim_graph.add_edge(u, v, **data)
+            else:
+                for node in other_nodes:
+                    self.sim_graph.add_edge(gateway, node, id=f"link_{gateway}_{node}", link_type="wireless", status="ACTIVE", latency=2.0)
+            self.topology_type = "live"
+
+        elif topo == "star":
             # Star topology: Gateway connects to every peripheral node
             for node in other_nodes:
                 self.sim_graph.add_edge(gateway, node, id=f"link_{gateway}_{node}", link_type="wireless", status="ACTIVE", latency=2.0)
@@ -175,7 +235,7 @@ class NetworkSimulator:
             self.topology_type = "mesh"
 
         else:
-            return False, f"Unsupported topology '{topology_name}'. Choose star, ring, or mesh."
+            return False, f"Unsupported topology '{topology_name}'. Choose live, star, ring, or mesh."
 
         # Re-apply any active failed nodes to the new edges
         for fn in self.failed_nodes:
@@ -195,20 +255,25 @@ class NetworkSimulator:
         - Isolated nodes
         - Unreachable nodes from gateway
         - Connected components count
+        - Baseline vs active simulated metrics
         """
         # Build active operational subgraph
         active_subgraph = nx.Graph()
         for node, data in self.sim_graph.nodes(data=True):
-            if data.get("status") not in ["FAILED", "OFFLINE"]:
+            if not data.get("is_simulated_failed") and data.get("status") != "FAILED" and data.get("simulated_status") != "FAILED":
                 active_subgraph.add_node(node, **data)
 
         for u, v, data in self.sim_graph.edges(data=True):
             if (u in active_subgraph and v in active_subgraph and 
-                data.get("status") not in ["FAILED", "INACTIVE"]):
+                not data.get("is_simulated_failed") and data.get("status") != "FAILED" and data.get("simulated_status") != "FAILED"):
                 active_subgraph.add_edge(u, v, **data)
 
         total_nodes = self.sim_graph.number_of_nodes()
         active_nodes_count = active_subgraph.number_of_nodes()
+        total_links = self.sim_graph.number_of_edges()
+        active_links_count = active_subgraph.number_of_edges()
+        failed_links_count = len(self.failed_links)
+        has_live_devices = (total_nodes > 1)
         
         # Check connected components of active subgraph
         components = list(nx.connected_components(active_subgraph)) if active_nodes_count > 0 else []
@@ -229,10 +294,31 @@ class NetworkSimulator:
         # Isolated nodes (degree 0 in active graph)
         isolated_nodes = [n for n in self.sim_graph.nodes() if n not in active_subgraph or active_subgraph.degree(n) == 0]
 
+        severity = "NORMAL"
+        if not is_fully_connected or len(self.failed_nodes) > 0:
+            severity = "CRITICAL"
+        elif not has_live_devices:
+            severity = "WARNING"
+
+        warning_msg = None
+        if not has_live_devices:
+            warning_msg = "No current live devices are available for simulation. Please discover or monitor devices on the current network first."
+
+        baseline_info = getattr(self, "baseline_snapshot", {})
+        baseline_node_count = baseline_info.get("baseline_node_count", total_nodes)
+        baseline_link_count = baseline_info.get("baseline_link_count", total_links)
+
         return {
             "topology_type": self.topology_type.upper(),
             "total_nodes": total_nodes,
+            "baseline_nodes": baseline_node_count,
             "active_nodes": active_nodes_count,
+            "failed_nodes_count": len(self.failed_nodes),
+            "baseline_links": baseline_link_count,
+            "active_links": active_links_count,
+            "failed_links_count": failed_links_count,
+            "has_live_devices": has_live_devices,
+            "warning": warning_msg,
             "failed_nodes": list(self.failed_nodes),
             "failed_links": [f"{u} <-> {v}" for u, v in self.failed_links],
             "connected_components_count": len(components),
@@ -240,7 +326,8 @@ class NetworkSimulator:
             "is_connected": is_fully_connected,
             "isolated_nodes": isolated_nodes,
             "unreachable_from_gateway": unreachable_from_gw,
-            "impact_severity": "CRITICAL" if not is_fully_connected or len(self.failed_nodes) > 0 else "NORMAL"
+            "impact_severity": severity,
+            "baseline_snapshot": baseline_info
         }
 
     def get_path(self, source, target):
@@ -259,8 +346,9 @@ class NetworkSimulator:
         unreachable_set = set(impact["unreachable_from_gateway"])
 
         for node_id, data in self.sim_graph.nodes(data=True):
-            status = data.get("status", "ONLINE")
-            is_unreachable = node_id in unreachable_set and status != "FAILED"
+            status = data.get("status", "ACTIVE")
+            is_failed = data.get("is_simulated_failed", False) or status == "FAILED"
+            is_unreachable = node_id in unreachable_set and not is_failed
             
             elements["nodes"].append({
                 "data": {
@@ -268,8 +356,10 @@ class NetworkSimulator:
                     "label": data.get("name", str(node_id)),
                     "ip": data.get("ip", ""),
                     "type": data.get("type", "Computer"),
-                    "status": status,
-                    "is_simulated_failed": status == "FAILED",
+                    "status": "FAILED" if is_failed else status,
+                    "simulated_status": "FAILED" if is_failed else "ACTIVE",
+                    "live_status": data.get("baseline_live_status", data.get("live_status", "ONLINE")),
+                    "is_simulated_failed": is_failed,
                     "is_unreachable": is_unreachable,
                     "latency": data.get("latency")
                 }
@@ -277,15 +367,16 @@ class NetworkSimulator:
 
         for u, v, data in self.sim_graph.edges(data=True):
             edge_id = data.get("id", f"sim_edge_{u}_{v}")
-            status = data.get("status", "ACTIVE")
+            is_edge_failed = data.get("is_simulated_failed", False) or data.get("status") == "FAILED"
             elements["edges"].append({
                 "data": {
                     "id": edge_id,
                     "source": str(u),
                     "target": str(v),
                     "link_type": data.get("link_type", "wireless"),
-                    "status": status,
-                    "is_simulated_failed": status == "FAILED"
+                    "status": "FAILED" if is_edge_failed else "ACTIVE",
+                    "simulated_status": "FAILED" if is_edge_failed else "ACTIVE",
+                    "is_simulated_failed": is_edge_failed
                 }
             })
 

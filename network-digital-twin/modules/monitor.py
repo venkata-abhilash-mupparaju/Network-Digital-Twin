@@ -24,7 +24,13 @@ from config import (
     PACKET_LOSS_THRESHOLD
 )
 from database import get_db_connection
-from .network_info import check_network_change, sync_network_session, get_active_session
+from .network_info import (
+    check_network_change,
+    sync_network_session,
+    get_active_session,
+    get_current_authorized_devices,
+    ensure_authorized_test_devices
+)
 from .icmp import ping_host, ping_device_probes, validate_ip
 from .events import (
     log_event,
@@ -101,21 +107,20 @@ class NetworkMonitor:
                     log_event("SYSTEM", EVENT_NETWORK_CHANGED,
                               f"Network transition detected: switched to {current_net_id}", conn=conn)
 
-                # 3. Query ONLY devices belonging to the CURRENT network that are marked is_monitored = 1
-                cursor.execute(
-                    """
-                    SELECT device_id, device_name, ip_address, network_id, device_type, description
-                    FROM devices
-                    WHERE network_id = ? AND is_monitored = 1
-                    """,
-                    (current_net_id,)
-                )
-                current_devices = [dict(r) for r in cursor.fetchall()]
+                # 3. Query authorized devices belonging to the CURRENT network
+                authorized_devices = get_current_authorized_devices(net_info)
+                if not authorized_devices:
+                    authorized_devices = ensure_authorized_test_devices(net_info)
 
-                # 4. Synchronize Digital Twin graph so it ONLY contains current network nodes
+                current_devices = [d for d in authorized_devices if d.get("is_monitored") == 1]
+
+                # 4. Synchronize Digital Twin graph so it contains current network nodes
                 self.digital_twin.sync_with_current_network(
                     gateway_ip=current_gateway,
-                    monitored_devices=current_devices
+                    authorized_devices=authorized_devices,
+                    monitored_devices=current_devices,
+                    session_id=session_id,
+                    network_cidr=net_info.get("network")
                 )
 
                 # 5. Monitor each device on the CURRENT network

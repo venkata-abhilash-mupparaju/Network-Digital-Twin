@@ -16,6 +16,38 @@
         <button class="btn btn-secondary btn-sm" id="btnResetSim" title="Reset and re-clone live graph">⟲ Reset to Live State</button>
     </div>
 
+    <!-- Baseline Snapshot Metadata Card -->
+    <div class="panel" style="margin-bottom: 20px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(56, 189, 248, 0.2); padding: 14px 20px;">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span class="badge badge-info" style="font-size: 0.8rem; padding: 4px 8px;">TWIN BASELINE SNAPSHOT</span>
+                <span style="color: #94a3b8; font-size: 0.85rem;">Cloned in-memory model of current network session</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 24px; font-size: 0.85rem;">
+                <div>
+                    <span style="color: #64748b;">Subnet:</span>
+                    <strong style="color: #38bdf8;" id="simSnapshotNetwork">Loading...</strong>
+                </div>
+                <div>
+                    <span style="color: #64748b;">Gateway:</span>
+                    <strong style="color: #f1f5f9;" id="simSnapshotGateway">Loading...</strong>
+                </div>
+                <div>
+                    <span style="color: #64748b;">Baseline Nodes:</span>
+                    <strong style="color: #10b981;" id="simSnapshotNodes">0</strong>
+                </div>
+                <div>
+                    <span style="color: #64748b;">Baseline Links:</span>
+                    <strong style="color: #10b981;" id="simSnapshotLinks">0</strong>
+                </div>
+                <div>
+                    <span style="color: #64748b;">Snapshot Time:</span>
+                    <span style="color: #cbd5e1;" id="simSnapshotTime">--:--:--</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Control Toolbar: Topologies & Fault Injection -->
     <section class="panel control-toolbar-panel">
         <div class="toolbar-section">
@@ -45,8 +77,37 @@
                 <select id="selectFailLink" class="form-input form-input-sm"></select>
                 <button class="btn btn-danger btn-sm" id="btnFailLink">Sever Link</button>
             </div>
+
+            <div class="action-inline-group">
+                <select id="selectRecoverLink" class="form-input form-input-sm"></select>
+                <button class="btn btn-success btn-sm" id="btnRecoverLink" disabled>Restore Link</button>
+            </div>
         </div>
     </section>
+
+    <!-- Informative Notice When Only Gateway or No Live Devices Exist -->
+    <div id="simEmptyNotice" class="panel" style="display: none; margin-bottom: 20px; border-left: 4px solid #f59e0b; background: rgba(245, 158, 11, 0.08); padding: 14px 20px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 1.4rem;">ℹ</span>
+            <div>
+                <strong style="color: #f59e0b; font-size: 0.95rem;">No Current Live Devices Available for Simulation</strong>
+                <p style="margin: 4px 0 0; color: #cbd5e1; font-size: 0.85rem;">
+                    The live Digital Twin currently contains only the network gateway. To simulate realistic outages, discover or monitor devices on the active network via the <a href="/" style="color: #38bdf8; text-decoration: underline;">Dashboard</a> or <a href="/devices" style="color: #38bdf8; text-decoration: underline;">Device Manager</a>.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Twin Notice when devices are available -->
+    <div id="simActiveNotice" class="panel" style="display: none; margin-bottom: 20px; border-left: 4px solid #10b981; background: rgba(16, 185, 129, 0.08); padding: 12px 20px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 1.2rem; color: #10b981;">✓</span>
+            <div>
+                <strong style="color: #10b981; font-size: 0.9rem;">Current Digital Twin Ready for What-If Simulation</strong>
+                <span style="margin-left: 8px; color: #cbd5e1; font-size: 0.85rem;" id="simActiveNoticeText">All current authorized nodes available.</span>
+            </div>
+        </div>
+    </div>
 
     <!-- Workspace: Canvas & Impact Analysis -->
     <div class="workspace-grid">
@@ -82,8 +143,8 @@
 
             <div class="impact-metrics-list">
                 <div class="impact-metric-row">
-                    <span class="impact-label">Total Simulated Nodes:</span>
-                    <strong class="impact-value" id="simTotalNodes">0</strong>
+                    <span class="impact-label">Baseline Twin Nodes:</span>
+                    <strong class="impact-value text-info" id="simBaselineNodes">0</strong>
                 </div>
                 <div class="impact-metric-row">
                     <span class="impact-label">Operational Active Nodes:</span>
@@ -92,6 +153,18 @@
                 <div class="impact-metric-row">
                     <span class="impact-label">Simulated Failed Devices:</span>
                     <strong class="impact-value text-danger" id="simFailedCount">0</strong>
+                </div>
+                <div class="impact-metric-row">
+                    <span class="impact-label">Baseline Twin Links:</span>
+                    <strong class="impact-value text-info" id="simBaselineLinks">0</strong>
+                </div>
+                <div class="impact-metric-row">
+                    <span class="impact-label">Operational Active Links:</span>
+                    <strong class="impact-value text-online" id="simActiveLinks">0</strong>
+                </div>
+                <div class="impact-metric-row">
+                    <span class="impact-label">Simulated Severed Links:</span>
+                    <strong class="impact-value text-danger" id="simFailedLinks">0</strong>
                 </div>
                 <div class="impact-metric-row">
                     <span class="impact-label">Connected Graph Components:</span>

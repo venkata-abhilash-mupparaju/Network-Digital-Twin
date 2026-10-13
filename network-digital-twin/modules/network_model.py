@@ -75,17 +75,30 @@ class DigitalTwinNetwork:
             )
         logger.info("Device %s (%s) mapped to Digital Twin graph.", device_id, ip)
 
-    def sync_with_current_network(self, gateway_ip, gateway_name=None, monitored_devices=None):
+    def sync_with_current_network(self, gateway_ip, gateway_name=None, monitored_devices=None,
+                                 authorized_devices=None, discovered_ips=None, session_id=None, network_cidr=None):
         """
         Strictly scopes the Digital Twin graph to the current active network.
-        Removes any obsolete nodes from previous networks and establishes the current monitored set.
+        Removes any obsolete nodes from previous networks and establishes the current authorized model.
         """
         if monitored_devices is None:
             monitored_devices = []
+        if authorized_devices is None:
+            authorized_devices = monitored_devices
+        if discovered_ips is None:
+            discovered_ips = set()
 
         self.update_gateway_ip(gateway_ip, gateway_name)
 
-        current_dev_ids = {d["device_id"] for d in monitored_devices}
+        # Build map of all authorized and monitored devices belonging to current network
+        current_dev_dict = {}
+        for d in authorized_devices:
+            current_dev_dict[d["device_id"]] = d
+        for d in monitored_devices:
+            current_dev_dict[d["device_id"]] = d
+
+        current_dev_ids = set(current_dev_dict.keys())
+
         # Evict nodes that are no longer part of the current active network
         nodes_to_remove = [
             n for n in list(self.graph.nodes())
@@ -95,20 +108,37 @@ class DigitalTwinNetwork:
             self.graph.remove_node(n)
             logger.info("Evicted non-current network node from Digital Twin: %s", n)
 
-        # Synchronize current network monitored devices
-        for d in monitored_devices:
-            dev_id = d["device_id"]
+        # Synchronize current network authorized devices
+        for dev_id, d in current_dev_dict.items():
+            ip = d.get("ip_address", "")
+            is_disc = ip in discovered_ips
+            is_mon = bool(d.get("is_monitored", 1))
+            live_st = d.get("status", "UNKNOWN")
+            if live_st in ("STALE", "HISTORICAL"):
+                live_st = "UNKNOWN"
+
             if dev_id not in self.graph:
                 self.add_device(
                     device_id=dev_id,
                     name=d.get("device_name", dev_id),
-                    ip=d.get("ip_address", ""),
+                    ip=ip,
                     device_type=d.get("device_type", "Computer"),
                     description=d.get("description", "")
                 )
             else:
-                self.graph.nodes[dev_id]["ip"] = d.get("ip_address", self.graph.nodes[dev_id].get("ip"))
-                self.graph.nodes[dev_id]["name"] = d.get("device_name", self.graph.nodes[dev_id].get("name"))
+                self.graph.nodes[dev_id]["ip"] = ip
+                self.graph.nodes[dev_id]["name"] = d.get("device_name", self.graph.nodes[dev_id].get("name", dev_id))
+
+            # Enrich node attributes with separate architectural states
+            self.graph.nodes[dev_id]["authorization_status"] = d.get("authorization_status", "AUTHORIZED")
+            self.graph.nodes[dev_id]["discovery_status"] = "VISIBLE" if is_disc else "NOT_VISIBLE"
+            self.graph.nodes[dev_id]["monitoring_status"] = "MONITORED" if is_mon else "UNMONITORED"
+            self.graph.nodes[dev_id]["live_status"] = live_st
+            self.graph.nodes[dev_id]["status"] = live_st
+            if session_id:
+                self.graph.nodes[dev_id]["session_id"] = session_id
+            if network_cidr:
+                self.graph.nodes[dev_id]["network_cidr"] = network_cidr
 
     def update_device_status(self, device_id, status, latency=None):
         """
@@ -117,6 +147,7 @@ class DigitalTwinNetwork:
         """
         if device_id in self.graph:
             self.graph.nodes[device_id]["status"] = status
+            self.graph.nodes[device_id]["live_status"] = status
             self.graph.nodes[device_id]["latency"] = latency
             
             # Also update edge status
@@ -182,6 +213,10 @@ class DigitalTwinNetwork:
                     "ip": data.get("ip", ""),
                     "type": data.get("type", "Computer"),
                     "status": data.get("status", "UNKNOWN"),
+                    "live_status": data.get("live_status", data.get("status", "UNKNOWN")),
+                    "authorization_status": data.get("authorization_status", "AUTHORIZED"),
+                    "discovery_status": data.get("discovery_status", "NOT_VISIBLE"),
+                    "monitoring_status": data.get("monitoring_status", "MONITORED"),
                     "latency": data.get("latency")
                 }
             })
@@ -200,3 +235,51 @@ class DigitalTwinNetwork:
             })
             
         return elements
+
+    def to_api_dict(self, network_info=None):
+        """
+        Returns full Digital Twin state according to the architectural specification.
+        Separates network metadata, nodes with architectural attributes, edges, elements, and summary.
+        """
+        net_info = network_info or {}
+        nodes_list = []
+        for node_id, data in self.graph.nodes(data=True):
+            nodes_list.append({
+                "id": str(node_id),
+                "name": data.get("name", str(node_id)),
+                "ip": data.get("ip", ""),
+                "type": data.get("type", "Computer"),
+                "status": data.get("status", "UNKNOWN"),
+                "live_status": data.get("live_status", data.get("status", "UNKNOWN")),
+                "discovery": data.get("discovery_status", "NOT_VISIBLE"),
+                "discovery_status": data.get("discovery_status", "NOT_VISIBLE"),
+                "authorization_status": data.get("authorization_status", "AUTHORIZED"),
+                "monitoring_status": data.get("monitoring_status", "MONITORED"),
+                "latency": data.get("latency")
+            })
+
+        edges_list = []
+        for u, v, data in self.graph.edges(data=True):
+            edges_list.append({
+                "source": str(u),
+                "target": str(v),
+                "status": data.get("status", "ACTIVE"),
+                "link_type": data.get("link_type", "wireless"),
+                "latency": data.get("latency")
+            })
+
+        return {
+            "mode": "LIVE_MONITORING",
+            "network": {
+                "cidr": net_info.get("network"),
+                "gateway": net_info.get("gateway") or self.gateway_ip,
+                "interface": net_info.get("interface"),
+                "local_ip": net_info.get("local_ip"),
+                "network_id": net_info.get("network_id")
+            },
+            "network_id": net_info.get("network_id"),
+            "nodes": nodes_list,
+            "edges": edges_list,
+            "elements": self.to_cytoscape_elements(),
+            "summary": self.get_summary()
+        }

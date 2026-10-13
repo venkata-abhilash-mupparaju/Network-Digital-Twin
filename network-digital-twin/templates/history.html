@@ -7,15 +7,15 @@
     <div class="page-header-row">
         <div>
             <h2 class="page-title">Historical Telemetry & Audit Logs</h2>
-            <p class="page-desc">Time-series ping latency records and network state transitions stored in SQLite.</p>
+            <p class="page-desc">Time-series ICMP telemetry records and audited state transitions stored in SQLite (Timestamps in Indian Standard Time, IST / UTC+05:30).</p>
         </div>
         <div class="panel-actions">
             <button class="btn btn-secondary btn-sm" onclick="window.location.reload()">⟲ Refresh Data</button>
         </div>
     </div>
 
-    <!-- Summary Stats -->
-    <div class="metrics-grid">
+    <!-- Summary Stats: 5 Metrics -->
+    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
         <div class="metric-card">
             <div class="metric-header">
                 <span class="metric-label">TOTAL PINGS</span>
@@ -36,11 +36,29 @@
 
         <div class="metric-card">
             <div class="metric-header">
+                <span class="metric-label">EVENTS LOGGED</span>
+                <span class="metric-icon">📋</span>
+            </div>
+            <div class="metric-value text-accent">{{ total_events }}</div>
+            <div class="metric-sub">Audited transitions & alerts</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
+                <span class="metric-label">MONITORED DEVICES</span>
+                <span class="metric-icon">💻</span>
+            </div>
+            <div class="metric-value">{{ monitored_devices_count }}</div>
+            <div class="metric-sub">On active network</div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-header">
                 <span class="metric-label">NETWORK SESSIONS</span>
                 <span class="metric-icon">🔄</span>
             </div>
             <div class="metric-value">{{ sessions|length }}</div>
-            <div class="metric-sub">Tracked Hotspots & Subnets</div>
+            <div class="metric-sub">Tracked environments</div>
         </div>
     </div>
 
@@ -62,7 +80,8 @@
                         <th>Subnet CIDR</th>
                         <th>Gateway</th>
                         <th>Host IP</th>
-                        <th>Start Time</th>
+                        <th>Start Time (IST)</th>
+                        <th>End Time (IST)</th>
                         <th>Session State</th>
                     </tr>
                 </thead>
@@ -74,7 +93,16 @@
                         <td>{{ s.network_cidr or 'N/A' }}</td>
                         <td><code>{{ s.gateway or 'None' }}</code></td>
                         <td><code>{{ s.local_ip or 'N/A' }}</code></td>
-                        <td><span class="text-muted font-mono">{{ s.start_time }}</span></td>
+                        <td><span class="text-muted font-mono" style="font-size: 0.75rem;">{{ s.start_time_local or s.start_time }}</span></td>
+                        <td>
+                            <span class="text-muted font-mono" style="font-size: 0.75rem;">
+                                {% if s.is_active %}
+                                    <span class="badge badge-online" style="font-size: 0.7rem;">Active</span>
+                                {% else %}
+                                    {{ s.end_time_local or s.end_time or 'Ended' }}
+                                {% endif %}
+                            </span>
+                        </td>
                         <td>
                             {% if s.is_active %}
                                 <span class="badge badge-online">CURRENT ACTIVE</span>
@@ -85,7 +113,7 @@
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="7" class="text-center text-muted">No network sessions recorded yet.</td>
+                        <td colspan="8" class="text-center text-muted">No network sessions recorded yet.</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -102,13 +130,32 @@
                     <h3 class="panel-title">System & Network Events</h3>
                     <span class="panel-subtitle">Audited status transitions, latency alerts, and simulation runs</span>
                 </div>
-                <span class="badge badge-info">{{ events|length }} Events</span>
+                <span class="badge badge-info" id="eventBadgeCount">{{ events|length }} Events</span>
             </div>
+
+            <!-- Event Filter Bar -->
+            <div style="padding: 10px 16px; border-bottom: 1px solid rgba(55,65,81,0.4); display: flex; gap: 10px; flex-wrap: wrap; background: rgba(15,23,42,0.4);">
+                <input type="text" id="filterEventTarget" class="form-input form-input-sm" placeholder="🔍 Filter Target..." style="width: 150px;" oninput="filterEventsTable()">
+                <select id="filterEventType" class="form-input form-input-sm" style="width: 170px;" onchange="filterEventsTable()">
+                    <option value="">All Event Types</option>
+                    <option value="STATUS_CHANGE">STATUS_CHANGE</option>
+                    <option value="ALERT">ALERT</option>
+                    <option value="DEVICE_ONLINE">DEVICE_ONLINE</option>
+                    <option value="DEVICE_UNREACHABLE">DEVICE_UNREACHABLE</option>
+                    <option value="DEVICE_RECOVERED">DEVICE_RECOVERED</option>
+                    <option value="DEVICE_DISCOVERED">DEVICE_DISCOVERED</option>
+                    <option value="NETWORK_CHANGED">NETWORK_CHANGED</option>
+                    <option value="SIMULATION">SIMULATION</option>
+                    <option value="SYSTEM">SYSTEM</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="resetEventFilters()">Clear</button>
+            </div>
+
             <div class="table-responsive" style="max-height: 520px; overflow-y: auto;">
-                <table class="data-table data-table-sm">
+                <table class="data-table data-table-sm" id="eventsTable">
                     <thead>
                         <tr>
-                            <th>Timestamp</th>
+                            <th>Timestamp (IST)</th>
                             <th>Target</th>
                             <th>Type</th>
                             <th>Message</th>
@@ -116,11 +163,11 @@
                     </thead>
                     <tbody>
                         {% for ev in events %}
-                        <tr>
-                            <td><span class="text-muted font-mono">{{ ev.timestamp }}</span></td>
+                        <tr class="event-row" data-target="{{ ev.device_id or 'SYSTEM' }}" data-type="{{ ev.event_type }}">
+                            <td><span class="text-muted font-mono" style="font-size: 0.75rem;">{{ ev.timestamp_local or ev.timestamp }}</span></td>
                             <td><code>{{ ev.device_id or 'SYSTEM' }}</code></td>
                             <td>
-                                <span class="badge {% if ev.event_type == 'STATUS_CHANGE' %}badge-online{% elif ev.event_type == 'ALERT' %}badge-warning{% else %}badge-system{% endif %}">
+                                <span class="badge {% if ev.event_type in ('STATUS_CHANGE', 'DEVICE_ONLINE', 'DEVICE_RECOVERED') %}badge-online{% elif 'THRESHOLD' in ev.event_type or ev.event_type in ('ALERT', 'DEVICE_UNREACHABLE') %}badge-warning{% elif ev.event_type == 'SIMULATION' %}badge-info{% else %}badge-system{% endif %}">
                                     {{ ev.event_type }}
                                 </span>
                             </td>
@@ -146,23 +193,23 @@
                 <span class="badge badge-pulse">SQLite Records</span>
             </div>
             
-            <!-- Filter Bar (Section 39) -->
+            <!-- Filter Bar -->
             <div style="padding: 10px 16px; border-bottom: 1px solid rgba(55,65,81,0.4); display: flex; gap: 10px; flex-wrap: wrap; background: rgba(15,23,42,0.4);">
-                <input type="text" id="filterDevice" class="form-input form-input-sm" placeholder="🔍 Filter by Device ID..." style="width: 170px;" oninput="filterTelemetryTable()">
-                <input type="text" id="filterNetwork" class="form-input form-input-sm" placeholder="🌐 Filter by Network..." style="width: 180px;" oninput="filterTelemetryTable()">
-                <select id="filterStatus" class="form-input form-input-sm" style="width: 140px;" onchange="filterTelemetryTable()">
+                <input type="text" id="filterDevice" class="form-input form-input-sm" placeholder="🔍 Filter Device..." style="width: 150px;" oninput="filterTelemetryTable()">
+                <input type="text" id="filterNetwork" class="form-input form-input-sm" placeholder="🌐 Filter Network..." style="width: 160px;" oninput="filterTelemetryTable()">
+                <select id="filterStatus" class="form-input form-input-sm" style="width: 130px;" onchange="filterTelemetryTable()">
                     <option value="">All Statuses</option>
                     <option value="ONLINE">ONLINE</option>
                     <option value="UNREACHABLE">UNREACHABLE</option>
                 </select>
-                <button class="btn btn-secondary btn-sm" onclick="resetTelemetryFilters()">Clear Filters</button>
+                <button class="btn btn-secondary btn-sm" onclick="resetTelemetryFilters()">Clear</button>
             </div>
 
             <div class="table-responsive" style="max-height: 520px; overflow-y: auto;">
                 <table class="data-table data-table-sm" id="telemetryTable">
                     <thead>
                         <tr>
-                            <th>Timestamp</th>
+                            <th>Timestamp (IST)</th>
                             <th>Device</th>
                             <th>Status</th>
                             <th>Avg Latency</th>
@@ -174,8 +221,13 @@
                     <tbody>
                         {% for st in statuses %}
                         <tr class="telemetry-row" data-device="{{ st.device_id }}" data-network="{{ st.network_id or '' }}" data-status="{{ st.status }}">
-                            <td><span class="text-muted font-mono">{{ st.timestamp }}</span></td>
-                            <td><code>{{ st.device_id }}</code></td>
+                            <td><span class="text-muted font-mono" style="font-size: 0.75rem;">{{ st.timestamp_local or st.timestamp }}</span></td>
+                            <td>
+                                <code>{{ st.device_id }}</code>
+                                {% if st.device_name and st.device_name != st.device_id %}
+                                    <span style="font-size: 0.75rem; color: #94a3b8; display: block;">{{ st.device_name }}</span>
+                                {% endif %}
+                            </td>
                             <td>
                                 <span class="badge {% if st.status == 'ONLINE' %}badge-online{% else %}badge-offline{% endif %}">
                                     {{ st.status }}
@@ -241,6 +293,32 @@ function resetTelemetryFilters() {
     document.getElementById("filterNetwork").value = "";
     document.getElementById("filterStatus").value = "";
     filterTelemetryTable();
+}
+
+function filterEventsTable() {
+    const targetFilter = document.getElementById("filterEventTarget").value.trim().toLowerCase();
+    const typeFilter = document.getElementById("filterEventType").value;
+
+    const rows = document.querySelectorAll(".event-row");
+    rows.forEach(r => {
+        const t = (r.getAttribute("data-target") || "").toLowerCase();
+        const tp = r.getAttribute("data-type") || "";
+
+        const matchTarget = !targetFilter || t.includes(targetFilter);
+        const matchType = !typeFilter || tp === typeFilter;
+
+        if (matchTarget && matchType) {
+            r.style.display = "";
+        } else {
+            r.style.display = "none";
+        }
+    });
+}
+
+function resetEventFilters() {
+    document.getElementById("filterEventTarget").value = "";
+    document.getElementById("filterEventType").value = "";
+    filterEventsTable();
 }
 </script>
 {% endblock %}
